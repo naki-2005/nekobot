@@ -7,10 +7,12 @@ import tempfile
 import time
 import threading
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import Message, BotCommand
 from pyrogram.errors import FloodWait
 from neko import Neko
 from server import run_flask
+
+set_cmd = False
 
 async def safe_call(func, *args, **kwargs):
     while True:
@@ -39,10 +41,13 @@ class NekoTelegram:
         
         @self.app.on_message(filters.text & filters.private)
         async def _handle_message(client: Client, message: Message):
+            global set_cmd
+            if not set_cmd:
+                await self.lista_cmd()
+                set_cmd = True
             await self._handle_message(client, message)
     
     def start_flask(self):
-        """Inicia el servidor Flask en un hilo separado"""
         if self.flask_thread and self.flask_thread.is_alive():
             print("[INFO] Flask ya está corriendo")
             return
@@ -50,6 +55,16 @@ class NekoTelegram:
         self.flask_thread = threading.Thread(target=run_flask, daemon=True)
         self.flask_thread.start()
         print("[INFO] Servidor Flask iniciado en puerto 5000.")
+        
+    async def lista_cmd(self):
+        await self.app.set_bot_commands([
+            BotCommand("nh", "Descarga un doujin de nhentai"),
+            BotCommand("3h", "Descarga un doujin de 3hentai"),
+            BotCommand("snh", "Busca doujins por filtros en nhentai"),
+            BotCommand("s3h", "Busca doujins por filtros en 3hentai"),
+            BotCommand("up", "Subir archivo al vault")
+        ])
+        print("Comandos configurados en el bot")
     
     async def _handle_message(self, client: Client, message: Message):
         if not message.text:
@@ -208,10 +223,6 @@ class NekoTelegram:
         return "\n".join(tag_lines)
     
     def run(self):
-        print("[INFO] Iniciando servicios...")
-        
-        self.start_flask()
-
         print("[INFO] Iniciando bot de Telegram...")
         self.app.run()
 
