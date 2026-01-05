@@ -5,3 +5,4 @@ aiofiles
 aiohttp
 beautifulsoup4
 flask
+Pillow
