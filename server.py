@@ -1,11 +1,15 @@
 import os
+import json
 from flask import Flask, request, redirect, url_for, send_file, render_template_string
 from werkzeug.utils import secure_filename
 from PIL import Image
+from neko import Neko
 
 app = Flask(__name__)
 BASE_DIR = os.path.join(os.getcwd(), "vault")
 os.makedirs(BASE_DIR, exist_ok=True)
+
+neko_instance = Neko()
 
 @app.route("/", defaults={"req_path": ""})
 @app.route("/<path:req_path>")
@@ -93,9 +97,101 @@ def webp_convert():
     '''
     return form_html
 
+@app.route("/nekotools", methods=["GET", "POST"])
+def nekotools():
+    result_text = ""
+    if request.method == "POST":
+        action = request.form.get("action")
+        
+        if action == "snh":
+            search_term = request.form.get("snh_search", "").strip()
+            page = request.form.get("snh_page", "1").strip()
+            if search_term:
+                result = neko_instance.snh(search_term, int(page) if page.isdigit() else 1)
+                result_text = json.dumps(result, indent=2, ensure_ascii=False)
+        
+        elif action == "s3h":
+            search_term = request.form.get("s3h_search", "").strip()
+            page = request.form.get("s3h_page", "1").strip()
+            if search_term:
+                result = neko_instance.s3h(search_term, int(page) if page.isdigit() else 1)
+                result_text = json.dumps(result, indent=2, ensure_ascii=False)
+        
+        elif action == "vnh":
+            code = request.form.get("vnh_code", "").strip()
+            if code:
+                result = neko_instance.vnh(code)
+                result_text = json.dumps(result, indent=2, ensure_ascii=False)
+        
+        elif action == "v3h":
+            code = request.form.get("v3h_code", "").strip()
+            if code:
+                result = neko_instance.v3h(code)
+                result_text = json.dumps(result, indent=2, ensure_ascii=False)
+        
+        elif action == "download":
+            url = request.form.get("download_url", "").strip()
+            filename = request.form.get("download_name", "downloaded_file").strip()
+            if url and filename:
+                safe_filename = neko_instance.clean_name(filename)
+                save_path = os.path.join(BASE_DIR, safe_filename)
+                success = neko_instance.download(url, save_path)
+                if success:
+                    result_text = f"✅ Descarga exitosa: {safe_filename}"
+                else:
+                    result_text = "❌ Error en la descarga"
+    
+    html = '''
+    <h1>NekoTools</h1>
+    
+    <h2>Descargar Archivo</h2>
+    <form method="post">
+        URL: <input type="text" name="download_url" placeholder="URL del archivo">
+        <br>
+        Nombre: <input type="text" name="download_name" placeholder="Nombre del archivo">
+        <input type="hidden" name="action" value="download">
+        <button type="submit">Descargar</button>
+    </form>
+    
+    <h2>Buscar en nhentai</h2>
+    <form method="post">
+        Término: <input type="text" name="snh_search" placeholder="Término de búsqueda">
+        <br>
+        Página: <input type="number" name="snh_page" value="1" min="1">
+        <input type="hidden" name="action" value="snh">
+        <button type="submit">Buscar SNH</button>
+    </form>
+    
+    <h2>Buscar en 3hentai</h2>
+    <form method="post">
+        Término: <input type="text" name="s3h_search" placeholder="Término de búsqueda">
+        <br>
+        Página: <input type="number" name="s3h_page" value="1" min="1">
+        <input type="hidden" name="action" value="s3h">
+        <button type="submit">Buscar S3H</button>
+    </form>
+    
+    <h2>Ver nhentai</h2>
+    <form method="post">
+        Código: <input type="text" name="vnh_code" placeholder="Código del doujin">
+        <input type="hidden" name="action" value="vnh">
+        <button type="submit">Ver VNH</button>
+    </form>
+    
+    <h2>Ver 3hentai</h2>
+    <form method="post">
+        Código: <input type="text" name="v3h_code" placeholder="Código del doujin">
+        <input type="hidden" name="action" value="v3h">
+        <button type="submit">Ver V3H</button>
+    </form>
+    
+    <h2>Resultado:</h2>
+    <pre>{{result_text}}</pre>
+    '''
+    return render_template_string(html, result_text=result_text)
+
 def run_flask():
     app.run(host="0.0.0.0", port=5000)
 
 if __name__ == "__main__":
     run_flask()
-
