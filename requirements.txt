@@ -1,0 +1,7 @@
+pyrogram
+nest_asyncio
+requests
+aiofiles
+aiohttp
+beautifulsoup4
+flask
