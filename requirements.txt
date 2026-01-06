@@ -6,3 +6,4 @@ aiohttp
 beautifulsoup4
 flask
 Pillow
+TgCrypto
