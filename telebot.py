@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import time
 import threading
+import base64
 from pyrogram import Client, filters
 from pyrogram.types import Message, BotCommand
 from pyrogram.errors import FloodWait
@@ -88,6 +89,58 @@ class NekoTelegram:
             search = parts[1]
             result = self.neko.snh(search) if text.startswith("/snh ") else self.neko.s3h(search)
             await self._process_search_json(message, result)
+
+        elif text.startswith("/hito"):
+            parts = text.split()
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "Usa: `/hito codigo` o `/hito url`")
+                return
+            arg = parts[1]
+            p_override = None
+            if "-p" in text:
+                try:
+                    p_override = int(text.split("-p",1)[1].strip())
+                except:
+                    p_override = None
+            g = None
+            p = 1
+            if arg.isdigit():
+                g = arg
+            elif "hitomi.la/reader/" in arg:
+                try:
+                    g = arg.split("reader/")[1].split(".html")[0]
+                    frag = arg.split("#")
+                    if len(frag) > 1 and p_override is None:
+                        p = int(frag[1])
+                except:
+                    await safe_call(message.reply_text, "Formato de enlace inválido")
+                    return
+            else:
+                try:
+                    g = arg.split("-")[-1].split(".html")[0]
+                except:
+                    await safe_call(message.reply_text, "Formato de enlace inválido")
+                    return
+            if p_override is not None:
+                p = p_override
+            result = self.neko.hito(g, p)
+            if "error" in result:
+                await safe_call(message.reply_text, f"Error: {result['error']}")
+                return
+            try:
+                pagina_actual = int(result["actual_page"])
+                paginas_totales = int(result["total_pages"])
+                datos_imagen = result["img"]
+                titulo = result["title"]
+                digitos = len(str(paginas_totales))
+                nombre_salida = f"{pagina_actual:0{digitos}d}.png"
+                imagen_decodificada = base64.b64decode(datos_imagen)
+                with open(nombre_salida, 'wb') as archivo_imagen:
+                    archivo_imagen.write(imagen_decodificada)
+                await safe_call(message.reply_photo, nombre_salida, caption=f"Página {pagina_actual}/{paginas_totales} de {titulo}")
+                os.remove(nombre_salida)
+            except Exception as e:
+                await safe_call(message.reply_text, f"Error procesando respuesta: {e}")
         
         elif text.startswith("/up"):
             parts = text.split(maxsplit=1)
