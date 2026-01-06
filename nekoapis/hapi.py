@@ -116,3 +116,16 @@ class NakiBotAPI:
             return {"error": "No es JSON", "raw_response": response.text[:200]}
         except Exception as e:
             return {"error": str(e)}
+
+    def hito(self, g, p=1):
+        url = f"{BASE_URL}/hito/"
+        params = {"g": g, "p": p}
+        response = self.session.get(url, params=params, timeout=30)
+        
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            return {"error": "No es JSON", "raw_response": response.text[:200]}
+        except Exception as e:
+            return {"error": str(e)}
+
