@@ -120,7 +120,7 @@ class NakiBotAPI:
     def hito(self, g, p=1):
         url = f"{BASE_URL}/hito/"
         params = {"g": g, "p": p}
-        response = self.session.get(url, params=params, timeout=30)
+        response = self.session.get(url, params=params)
         
         try:
             return response.json()
