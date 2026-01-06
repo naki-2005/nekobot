@@ -62,6 +62,13 @@ class Neko:
     
     def v3h(self, code):
         return self.hapi.v3h(code)
+
+    def hito(self, g, p=1):
+        result = self.hapi.hito(g, p)
+        if "error" in result:
+            return result
+        
+        return result
     
     def download(self, url, save_path):
         try:
