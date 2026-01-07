@@ -10,6 +10,22 @@ os.makedirs(BASE_DIR, exist_ok=True)
 
 neko_instance = Neko()
 
+def format_size(size_bytes):
+    """Convierte bytes a KB, MB o GB según corresponda"""
+    if size_bytes < 1024:
+        return f"{size_bytes} bytes"
+    
+    size_kb = size_bytes / 1024
+    if size_kb < 1024:
+        return f"{size_kb:.2f} KB"
+    
+    size_mb = size_kb / 1024
+    if size_mb < 1024:
+        return f"{size_mb:.2f} MB"
+    
+    size_gb = size_mb / 1024
+    return f"{size_gb:.2f} GB"
+
 @app.route("/", defaults={"req_path": ""})
 @app.route("/<path:req_path>")
 def dir_listing(req_path):
@@ -24,19 +40,20 @@ def dir_listing(req_path):
         full_path = os.path.join(req_path, f)
         abs_f = os.path.join(abs_path, f)
         size = os.path.getsize(abs_f)
+        formatted_size = format_size(size)
         if os.path.isdir(abs_f):
             file_links.append(
                 f'<li><a href="/{full_path}">{f}/</a> '
                 f'<form style="display:inline;" method="post" action="/delete">'
                 f'<input type="hidden" name="path" value="{full_path}">'
-                f'<button type="submit">Borrar</button></form> ({size} bytes)</li>'
+                f'<button type="submit">Borrar</button></form> ({formatted_size})</li>'
             )
         else:
             file_links.append(
                 f'<li><a href="/{full_path}">{f}</a> '
                 f'<form style="display:inline;" method="post" action="/delete">'
                 f'<input type="hidden" name="path" value="{full_path}">'
-                f'<button type="submit">Borrar</button></form> ({size} bytes)</li>'
+                f'<button type="submit">Borrar</button></form> ({formatted_size})</li>'
             )
     upload_form = '''
     <form method="post" action="/upload" enctype="multipart/form-data">
