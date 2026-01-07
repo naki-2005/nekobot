@@ -156,17 +156,41 @@ class Neko:
             return None
     
     def buscar_manga(self, termino):
-        return self.mangadex.buscar_manga(termino)
+        resultados = self.mangadex.buscar_manga(termino)
+        
+        for manga in resultados:
+            manga_id = manga.get('id', '')
+            if manga_id:
+                covers = self.mangadex.get_covers(manga_id)
+                cover_url = ""
+                for cover in covers:
+                    if cover['volume'] == '1':
+                        cover_url = cover['link']
+                        break
+                
+                if not cover_url and covers:
+                    cover_url = covers[0]['link']
+                
+                manga['cover'] = cover_url
+        
+        return resultados
     
     def get_covers(self, manga_id):
         return self.mangadex.get_covers(manga_id)
     
-    def list_chap(self, manga_id):
-        return self.mangadex.list_chap(manga_id)
+    def list_chap(self, manga_id, language='en'):
+        all_chapters = self.mangadex.list_chap(manga_id)
+        
+        filtered_chapters = []
+        for chapter in all_chapters:
+            if chapter.get('language', '').lower() == language.lower():
+                filtered_chapters.append(chapter)
+        
+        return filtered_chapters
     
-    def get_manga_info(self, manga_id):
+    def get_manga_info(self, manga_id, language='en'):
         try:
-            chapters = self.mangadex.list_chap(manga_id)
+            chapters = self.list_chap(manga_id, language)
             covers = self.mangadex.get_covers(manga_id)
             
             manga_info = {
@@ -196,12 +220,10 @@ class Neko:
     
     def download_manga(self, manga_id, idioma='en', cap_inicial=1, volumen_inicial=None, cap_final=None, volumen_final=None):
         try:
-            chapters = self.mangadex.list_chap(manga_id)
+            filtered_chapters = self.list_chap(manga_id, idioma)
             
-            filtered_chapters = []
-            for chapter in chapters:
-                if chapter['language'] == idioma:
-                    filtered_chapters.append(chapter)
+            if not filtered_chapters:
+                return json.dumps([{"error": f"No se encontraron capítulos en {idioma}"}], ensure_ascii=False)
             
             def sort_key(val):
                 if not val or val == 'sin_volumen':

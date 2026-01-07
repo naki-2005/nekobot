@@ -78,6 +78,7 @@ class NekoTelegram:
             BotCommand("mangasearch", "Buscar manga por término"),
             BotCommand("mangafile", "Configurar formato de manga (cbz/pdf)"),
             BotCommand("mangadlset", "Configurar descarga por volumen o capítulo"),
+            BotCommand("mangalang", "Configurar idioma para manga (en/es/ko/etc)"),
             BotCommand("mangadl", "Descargar manga por ID")
         ])
         print("Comandos configurados en el bot")
@@ -149,6 +150,31 @@ class NekoTelegram:
             await safe_call(message.reply_text, f"✅ Modo de descarga configurado a: **{mode_text}**")
             return
         
+        elif text.startswith("/mangalang"):
+            parts = text.split()
+            if len(parts) == 1:
+                current_lang = user_manga_settings.get(user_id, {}).get("language", "en")
+                await safe_call(message.reply_text, f"🌐 Idioma actual de manga: **{current_lang.upper()}**\nUsa: `/mangalang en` o `/mangalang es` o `/mangalang ko`")
+                return
+            
+            if len(parts) != 2:
+                await safe_call(message.reply_text, "Usa: `/mangalang en` o `/mangalang es` o `/mangalang ko`")
+                return
+            
+            lang = parts[1].lower()
+            valid_langs = ['en', 'es', 'ko', 'ja', 'zh', 'fr', 'de', 'ru', 'pt']
+            
+            if lang not in valid_langs:
+                await safe_call(message.reply_text, f"❌ Idioma no válido. Usa uno de: {', '.join(valid_langs)}")
+                return
+            
+            if user_id not in user_manga_settings:
+                user_manga_settings[user_id] = {}
+            
+            user_manga_settings[user_id]["language"] = lang
+            await safe_call(message.reply_text, f"✅ Idioma de manga configurado a: **{lang.upper()}**")
+            return
+        
         elif text.startswith("/mangasearch "):
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
@@ -165,7 +191,6 @@ class NekoTelegram:
                 return
             
             top_results = results[:5]
-            print(results[:5])
             for manga in top_results:
                 manga_id = manga.get("id", "")
                 title = manga.get("titulo", "Sin título")
@@ -489,20 +514,25 @@ class NekoTelegram:
     async def _process_manga_download(self, message, manga_id, mode, format_choice,
                                      start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
-            progress_msg = await safe_call(message.reply_text, f"📚 Obteniendo información del manga {manga_id}...")
+            user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
             
-            manga_info = self.neko.get_manga_info(manga_id)
+            progress_msg = await safe_call(message.reply_text, 
+                                          f"📚 Obteniendo capítulos en {user_lang.upper()} para manga {manga_id}...")
+            
+            manga_info = self.neko.get_manga_info(manga_id, language=user_lang)
             if not manga_info:
                 await safe_call(progress_msg.edit_text, "❌ No se pudo obtener información del manga")
                 return
             
-            covers = manga_info.get("covers", [])
             chapters = manga_info.get("chapters", [])
-            volumes_data = manga_info.get("volumes", {})
             
             if not chapters:
-                await safe_call(progress_msg.edit_text, "❌ No se encontraron capítulos para este manga")
+                await safe_call(progress_msg.edit_text, 
+                              f"❌ No se encontraron capítulos en {user_lang.upper()} para este manga")
                 return
+            
+            covers = manga_info.get("covers", [])
+            volumes_data = manga_info.get("volumes", {})
             
             covers_dict = {}
             for cover in covers:
@@ -528,6 +558,7 @@ class NekoTelegram:
     async def _download_manga_by_volumes(self, progress_msg, manga_id, volumes_order, volumes_data, covers_dict,
                                         format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
+            user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
             total_volumes = len(volumes_order)
             volume_index = 0
             
@@ -542,7 +573,7 @@ class NekoTelegram:
                     if self._sort_key(volume) > self._sort_key(str(end_volume)):
                         break
                 
-                await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume} ({volume_index}/{total_volumes})...")
+                await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume} ({volume_index}/{total_volumes}) en {user_lang.upper()}...")
                 
                 volume_chapters = volumes_data[volume]
                 volume_chapters.sort(key=lambda x: self._sort_key(x['chapter']))
@@ -637,6 +668,7 @@ class NekoTelegram:
     async def _download_manga_by_chapters(self, progress_msg, manga_id, chapters, format_choice,
                                          start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
+            user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
             chapters.sort(key=lambda x: self._sort_key(x['chapter']))
             
             filtered_chapters = []
@@ -667,7 +699,7 @@ class NekoTelegram:
                 chapter_num = chapter['chapter']
                 chapter_id = chapter['id']
                 
-                await safe_call(progress_msg.edit_text, f"📖 Descargando capítulo {chapter_num} ({idx+1}/{total_chapters})...")
+                await safe_call(progress_msg.edit_text, f"📖 Descargando capítulo {chapter_num} ({idx+1}/{total_chapters}) en {user_lang.upper()}...")
                 
                 image_links = self.neko.download_chapter(chapter_id)
                 
