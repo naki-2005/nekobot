@@ -554,7 +554,7 @@ class NekoTelegram:
         except Exception as e:
             print(f"Error en _process_manga_download: {e}")
             await safe_call(message.reply_text, f"❌ Error al procesar la descarga: {e}")
-                                      
+
     async def _download_manga_by_volumes(self, progress_msg, manga_id, volumes_order, volumes_data, covers_dict,
                                         format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
@@ -613,9 +613,12 @@ class NekoTelegram:
                     image_links = self.neko.download_chapter(chapter['id'])
                     if image_links:
                         for image_link in image_links:
-                            image_path = self.neko.download_image_to_temp(image_link)
-                            if image_path:
-                                all_volume_images.append(image_path)
+                            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                            temp_path = temp_file.name
+                            temp_file.close()
+                            
+                            if self.neko.download(image_link, temp_path):
+                                all_volume_images.append(temp_path)
                                 total_images_downloaded += 1
                                 
                                 start_time = time.time()
@@ -623,6 +626,8 @@ class NekoTelegram:
                                     await asyncio.sleep(0.1)
                                 
                                 await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume} ({volume_index}/{total_volumes}) en {user_lang.upper()}... ({total_images_downloaded}/{total_images_expected} Imágenes descargadas)")
+                            else:
+                                os.remove(temp_path)
                     
                     await asyncio.sleep(0.5)
                 
@@ -744,9 +749,12 @@ class NekoTelegram:
                 
                 all_chapter_images = []
                 for image_link in image_links:
-                    image_path = self.neko.download_image_to_temp(image_link)
-                    if image_path:
-                        all_chapter_images.append(image_path)
+                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                    temp_path = temp_file.name
+                    temp_file.close()
+                    
+                    if self.neko.download(image_link, temp_path):
+                        all_chapter_images.append(temp_path)
                         downloaded_images += 1
                         
                         start_time = time.time()
@@ -754,6 +762,8 @@ class NekoTelegram:
                             await asyncio.sleep(0.1)
                         
                         await safe_call(progress_msg.edit_text, f"📖 Descargando capítulo {chapter_num} ({idx+1}/{total_chapters}) en {user_lang.upper()}... ({downloaded_images}/{total_images} Imágenes descargadas)")
+                    else:
+                        os.remove(temp_path)
                 
                 if not all_chapter_images:
                     continue
