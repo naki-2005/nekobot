@@ -2,7 +2,6 @@ import os
 import json
 from flask import Flask, request, redirect, url_for, send_file, render_template_string
 from werkzeug.utils import secure_filename
-from PIL import Image
 from neko import Neko
 
 app = Flask(__name__)
@@ -73,30 +72,6 @@ def upload_file():
             file.save(save_path)
     return redirect(url_for("dir_listing", req_path=""))
 
-@app.route("/webp", methods=["GET", "POST"])
-def webp_convert():
-    if request.method == "POST":
-        target_format = request.form.get("format")
-        files = request.files.getlist("file")
-        converted_files = []
-        for file in files:
-            if file and file.filename != "":
-                img = Image.open(file.stream).convert("RGB")
-                filename = os.path.splitext(secure_filename(file.filename))[0] + "." + target_format.lower()
-                save_path = os.path.join(BASE_DIR, filename)
-                img.save(save_path, target_format.upper())
-                converted_files.append(filename)
-        return "<br>".join(converted_files) + " convertidos"
-    form_html = '''
-    <form method="post" enctype="multipart/form-data">
-        <input type="file" name="file" multiple>
-        <label><input type="radio" name="format" value="PNG" required> PNG</label>
-        <label><input type="radio" name="format" value="JPG" required> JPG</label>
-        <button type="submit">Convertir</button>
-    </form>
-    '''
-    return form_html
-
 @app.route("/nekotools", methods=["GET", "POST"])
 def nekotools():
     result_text = ""
@@ -122,12 +97,44 @@ def nekotools():
             if code:
                 result = neko_instance.vnh(code)
                 result_text = json.dumps(result, indent=2, ensure_ascii=False)
+                if isinstance(result, dict) and "code" in result:
+                    base_name = f"{result.get('title', 'unknown')} - {result.get('code', 'unknown')}"
+                    safe_name = neko_instance.clean_name(base_name)
+                    json_path = os.path.join(BASE_DIR, f"{safe_name}.json")
+                    txt_path = os.path.join(BASE_DIR, f"{safe_name}.txt")
+                    
+                    with open(json_path, 'w', encoding='utf-8') as f:
+                        json.dump(result, f, indent=2, ensure_ascii=False)
+                    
+                    if "image_links" in result and isinstance(result["image_links"], list):
+                        with open(txt_path, 'w', encoding='utf-8') as f:
+                            for link in result["image_links"]:
+                                f.write(f"{link}\n")
+                    
+                    result_text += f"\n\n✅ JSON guardado: {safe_name}.json"
+                    result_text += f"\n✅ TXT guardado: {safe_name}.txt"
         
         elif action == "v3h":
             code = request.form.get("v3h_code", "").strip()
             if code:
                 result = neko_instance.v3h(code)
                 result_text = json.dumps(result, indent=2, ensure_ascii=False)
+                if isinstance(result, dict) and "code" in result:
+                    base_name = f"{result.get('title', 'unknown')} - {result.get('code', 'unknown')}"
+                    safe_name = neko_instance.clean_name(base_name)
+                    json_path = os.path.join(BASE_DIR, f"{safe_name}.json")
+                    txt_path = os.path.join(BASE_DIR, f"{safe_name}.txt")
+                    
+                    with open(json_path, 'w', encoding='utf-8') as f:
+                        json.dump(result, f, indent=2, ensure_ascii=False)
+                    
+                    if "image_links" in result and isinstance(result["image_links"], list):
+                        with open(txt_path, 'w', encoding='utf-8') as f:
+                            for link in result["image_links"]:
+                                f.write(f"{link}\n")
+                    
+                    result_text += f"\n\n✅ JSON guardado: {safe_name}.json"
+                    result_text += f"\n✅ TXT guardado: {safe_name}.txt"
         
         elif action == "download":
             url = request.form.get("download_url", "").strip()
@@ -140,9 +147,114 @@ def nekotools():
                     result_text = f"✅ Descarga exitosa: {safe_filename}"
                 else:
                     result_text = "❌ Error en la descarga"
+        
+        elif action == "convert_png":
+            files = request.files.getlist("file")
+            converted_files = []
+            for file in files:
+                if file and file.filename != "":
+                    result = neko_instance.convert_to_png(file)
+                    if result:
+                        converted_files.append(result)
+            result_text = "<br>".join(converted_files) + " convertidos"
+        
+        elif action == "create_cbz":
+            nombre = request.form.get("cbz_name", "").strip()
+            lista_text = request.form.get("cbz_list", "").strip()
+            if nombre and lista_text:
+                lista = [item.strip() for item in lista_text.split("\n") if item.strip()]
+                result = neko_instance.create_cbz(nombre, lista)
+                if result and os.path.exists(result):
+                    result_text = f"✅ CBZ creado: {result}"
+                else:
+                    result_text = "❌ Error al crear CBZ"
+        
+        elif action == "create_pdf":
+            nombre = request.form.get("pdf_name", "").strip()
+            lista_text = request.form.get("pdf_list", "").strip()
+            if nombre and lista_text:
+                lista = [item.strip() for item in lista_text.split("\n") if item.strip()]
+                result = neko_instance.create_pdf(nombre, lista)
+                if result and os.path.exists(result):
+                    result_text = f"✅ PDF creado: {result}"
+                else:
+                    result_text = "❌ Error al crear PDF"
+        
+        elif action == "download_from_json":
+            json_file = request.files.get("json_file")
+            if json_file and json_file.filename.endswith('.json'):
+                try:
+                    data = json.load(json_file.stream)
+                    if isinstance(data, dict) and "image_links" in data and "title" in data and "code" in data:
+                        base_name = f"{data['title']} - {data['code']}"
+                        safe_name = neko_instance.clean_name(base_name)
+                        folder_path = os.path.join(BASE_DIR, safe_name)
+                        os.makedirs(folder_path, exist_ok=True)
+                        
+                        success_count = 0
+                        total_count = len(data["image_links"])
+                        
+                        for i, link in enumerate(data["image_links"], 1):
+                            ext = os.path.splitext(link)[1]
+                            if not ext:
+                                ext = ".jpg"
+                            filename = f"{i:04d}{ext}"
+                            file_path = os.path.join(folder_path, filename)
+                            if neko_instance.download(link, file_path):
+                                success_count += 1
+                        
+                        result_text = f"✅ Descargadas {success_count}/{total_count} imágenes en: {safe_name}/"
+                    else:
+                        result_text = "❌ JSON no tiene el formato esperado"
+                except Exception as e:
+                    result_text = f"❌ Error al procesar JSON: {str(e)}"
+        
+        elif action == "download_from_txt":
+            txt_file = request.files.get("txt_file")
+            folder_name = request.form.get("txt_folder", "").strip()
+            if txt_file and txt_file.filename.endswith('.txt') and folder_name:
+                try:
+                    content = txt_file.stream.read().decode('utf-8')
+                    links = [line.strip() for line in content.split('\n') if line.strip()]
+                    
+                    safe_name = neko_instance.clean_name(folder_name)
+                    folder_path = os.path.join(BASE_DIR, safe_name)
+                    os.makedirs(folder_path, exist_ok=True)
+                    
+                    success_count = 0
+                    total_count = len(links)
+                    
+                    for i, link in enumerate(links, 1):
+                        ext = os.path.splitext(link)[1]
+                        if not ext:
+                            ext = ".jpg"
+                        filename = f"{i:04d}{ext}"
+                        file_path = os.path.join(folder_path, filename)
+                        if neko_instance.download(link, file_path):
+                            success_count += 1
+                    
+                    result_text = f"✅ Descargadas {success_count}/{total_count} imágenes en: {safe_name}/"
+                except Exception as e:
+                    result_text = f"❌ Error al procesar TXT: {str(e)}"
     
     html = '''
     <h1>NekoTools</h1>
+    
+    <h2>Descargar desde JSON</h2>
+    <form method="post" enctype="multipart/form-data">
+        <input type="file" name="json_file" accept=".json">
+        <input type="hidden" name="action" value="download_from_json">
+        <button type="submit">Descargar imágenes desde JSON</button>
+    </form>
+    
+    <h2>Descargar desde TXT</h2>
+    <form method="post" enctype="multipart/form-data">
+        <input type="file" name="txt_file" accept=".txt">
+        <br>
+        Nombre de carpeta: <input type="text" name="txt_folder" placeholder="Nombre para la carpeta">
+        <input type="hidden" name="action" value="download_from_txt">
+        <button type="submit">Descargar imágenes desde TXT</button>
+    </form>
     
     <h2>Descargar Archivo</h2>
     <form method="post">
@@ -151,6 +263,33 @@ def nekotools():
         Nombre: <input type="text" name="download_name" placeholder="Nombre del archivo">
         <input type="hidden" name="action" value="download">
         <button type="submit">Descargar</button>
+    </form>
+    
+    <h2>Convertir a PNG</h2>
+    <form method="post" enctype="multipart/form-data">
+        <input type="file" name="file" multiple>
+        <input type="hidden" name="action" value="convert_png">
+        <button type="submit">Convertir</button>
+    </form>
+    
+    <h2>Crear CBZ</h2>
+    <form method="post">
+        Nombre: <input type="text" name="cbz_name" placeholder="Nombre del archivo">
+        <br>
+        Lista (URLs o paths, uno por línea):<br>
+        <textarea name="cbz_list" rows="5" cols="50"></textarea>
+        <input type="hidden" name="action" value="create_cbz">
+        <button type="submit">Crear CBZ</button>
+    </form>
+    
+    <h2>Crear PDF</h2>
+    <form method="post">
+        Nombre: <input type="text" name="pdf_name" placeholder="Nombre del archivo">
+        <br>
+        Lista (URLs o paths, uno por línea):<br>
+        <textarea name="pdf_list" rows="5" cols="50"></textarea>
+        <input type="hidden" name="action" value="create_pdf">
+        <button type="submit">Crear PDF</button>
     </form>
     
     <h2>Buscar en nhentai</h2>
