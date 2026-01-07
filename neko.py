@@ -6,9 +6,6 @@ import tempfile
 import shutil
 from PIL import Image
 from io import BytesIO
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.utils import ImageReader
 
 class Neko:
     def __init__(self):
@@ -128,7 +125,8 @@ class Neko:
         try:
             safe_nombre = self.clean_name(nombre)
             pdf_path = os.path.join(os.getcwd(), "vault", f"{safe_nombre}.pdf")
-            c = canvas.Canvas(pdf_path, pagesize=letter)
+            
+            images = []
             
             for item in lista:
                 try:
@@ -136,18 +134,20 @@ class Neko:
                         response = requests.get(item, timeout=30)
                         if response.status_code == 200:
                             img = Image.open(BytesIO(response.content))
-                            img_reader = ImageReader(BytesIO(response.content))
-                            c.drawImage(img_reader, 0, 0, width=letter[0], height=letter[1], preserveAspectRatio=True)
-                            c.showPage()
+                            img = img.convert("RGB")
+                            images.append(img)
                     else:
                         if os.path.exists(item):
-                            img_reader = ImageReader(item)
-                            c.drawImage(img_reader, 0, 0, width=letter[0], height=letter[1], preserveAspectRatio=True)
-                            c.showPage()
+                            img = Image.open(item)
+                            img = img.convert("RGB")
+                            images.append(img)
                 except Exception:
                     continue
             
-            c.save()
-            return pdf_path
+            if images:
+                images[0].save(pdf_path, "PDF", save_all=True, append_images=images[1:])
+                return pdf_path
+            
+            return None
         except Exception:
             return None
