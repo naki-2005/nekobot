@@ -4,6 +4,11 @@ import zipfile
 import requests
 import tempfile
 import shutil
+from PIL import Image
+from io import BytesIO
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.utils import ImageReader
 
 class Neko:
     def __init__(self):
@@ -82,6 +87,16 @@ class Neko:
         except Exception:
             return False
     
+    def convert_to_png(self, file):
+        try:
+            img = Image.open(file.stream).convert("RGB")
+            filename = os.path.splitext(file.filename)[0] + ".png"
+            save_path = os.path.join(os.getcwd(), "vault", filename)
+            img.save(save_path, "PNG")
+            return filename
+        except Exception:
+            return None
+    
     def create_cbz(self, nombre, lista):
         try:
             safe_nombre = self.clean_name(nombre)
@@ -91,20 +106,48 @@ class Neko:
                 if item.startswith('http'):
                     file_path = os.path.join(temp_dir, f"{i:04d}.jpg")
                     if not self.download(item, file_path):
-                        return f"F"
+                        return None
                 else:
                     if os.path.exists(item):
                         file_path = os.path.join(temp_dir, f"{i:04d}.jpg")
                         shutil.copy2(item, file_path)
                     else:
-                        return f"F"
+                        return None
             
-            cbz_path = f"{safe_nombre}.cbz"
+            cbz_path = os.path.join(os.getcwd(), "vault", f"{safe_nombre}.cbz")
             with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_DEFLATED) as cbz:
                 for file in sorted(os.listdir(temp_dir)):
                     cbz.write(os.path.join(temp_dir, file), file)
             
             shutil.rmtree(temp_dir)
             return cbz_path
-        except Exception as e:
-            return f"F"
+        except Exception:
+            return None
+    
+    def create_pdf(self, nombre, lista):
+        try:
+            safe_nombre = self.clean_name(nombre)
+            pdf_path = os.path.join(os.getcwd(), "vault", f"{safe_nombre}.pdf")
+            c = canvas.Canvas(pdf_path, pagesize=letter)
+            
+            for item in lista:
+                try:
+                    if item.startswith('http'):
+                        response = requests.get(item, timeout=30)
+                        if response.status_code == 200:
+                            img = Image.open(BytesIO(response.content))
+                            img_reader = ImageReader(BytesIO(response.content))
+                            c.drawImage(img_reader, 0, 0, width=letter[0], height=letter[1], preserveAspectRatio=True)
+                            c.showPage()
+                    else:
+                        if os.path.exists(item):
+                            img_reader = ImageReader(item)
+                            c.drawImage(img_reader, 0, 0, width=letter[0], height=letter[1], preserveAspectRatio=True)
+                            c.showPage()
+                except Exception:
+                    continue
+            
+            c.save()
+            return pdf_path
+        except Exception:
+            return None
