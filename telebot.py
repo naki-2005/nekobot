@@ -15,6 +15,7 @@ from server import run_flask
 
 set_cmd = False
 user_settings = {}
+user_manga_settings = {}
 
 async def safe_call(func, *args, **kwargs):
     while True:
@@ -73,7 +74,11 @@ class NekoTelegram:
             BotCommand("s3h", "Busca doujins por filtros en 3hentai"),
             BotCommand("hito", "Descarga doujin de hitomi (usa -s y -f para rango)"),
             BotCommand("up", "Subir archivo al vault"),
-            BotCommand("setfile", "Configurar formato de salida (cbz/pdf/raw)")
+            BotCommand("setfile", "Configurar formato de salida (cbz/pdf/raw)"),
+            BotCommand("mangasearch", "Buscar manga por término"),
+            BotCommand("mangafile", "Configurar formato de manga (cbz/pdf)"),
+            BotCommand("mangadlset", "Configurar descarga por volumen o capítulo"),
+            BotCommand("mangadl", "Descargar manga por ID")
         ])
         print("Comandos configurados en el bot")
     
@@ -96,7 +101,157 @@ class NekoTelegram:
             await safe_call(message.reply_text, f"✅ Formato configurado a: **{format_option.upper()}**")
             return
         
-        if text.startswith("/nh ") or text.startswith("/3h "):
+        elif text.startswith("/mangafile"):
+            parts = text.split()
+            if len(parts) == 1:
+                current = user_manga_settings.get(user_id, {}).get("format", "cbz")
+                await safe_call(message.reply_text, f"📚 Formato actual de manga: **{current.upper()}**\nUsa: `/mangafile cbz` o `/mangafile pdf`")
+                return
+            
+            if len(parts) != 2:
+                await safe_call(message.reply_text, "Usa: `/mangafile cbz` o `/mangafile pdf`")
+                return
+            
+            format_option = parts[1].lower()
+            if format_option not in ["cbz", "pdf"]:
+                await safe_call(message.reply_text, "Formato inválido. Usa: cbz o pdf")
+                return
+            
+            if user_id not in user_manga_settings:
+                user_manga_settings[user_id] = {}
+            
+            user_manga_settings[user_id]["format"] = format_option
+            await safe_call(message.reply_text, f"✅ Formato de manga configurado a: **{format_option.upper()}**")
+            return
+        
+        elif text.startswith("/mangadlset"):
+            parts = text.split()
+            if len(parts) == 1:
+                current = user_manga_settings.get(user_id, {}).get("mode", "vol")
+                mode_text = "volúmenes" if current == "vol" else "capítulos"
+                await safe_call(message.reply_text, f"📚 Modo actual de descarga: **{mode_text}**\nUsa: `/mangadlset vol` o `/mangadlset chap`")
+                return
+            
+            if len(parts) != 2:
+                await safe_call(message.reply_text, "Usa: `/mangadlset vol` o `/mangadlset chap`")
+                return
+            
+            mode_option = parts[1].lower()
+            if mode_option not in ["vol", "chap"]:
+                await safe_call(message.reply_text, "Modo inválido. Usa: vol o chap")
+                return
+            
+            if user_id not in user_manga_settings:
+                user_manga_settings[user_id] = {}
+            
+            user_manga_settings[user_id]["mode"] = mode_option
+            mode_text = "volúmenes" if mode_option == "vol" else "capítulos"
+            await safe_call(message.reply_text, f"✅ Modo de descarga configurado a: **{mode_text}**")
+            return
+        
+        elif text.startswith("/mangasearch "):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "Usa: `/mangasearch término`")
+                return
+            
+            search_term = parts[1]
+            await safe_call(message.reply_text, f"🔍 Buscando manga: **{search_term}**...")
+            
+            results = self.neko.buscar_manga(search_term)
+            
+            if not results or len(results) == 0:
+                await safe_call(message.reply_text, "❌ No se encontraron resultados")
+                return
+            
+            top_results = results[:5]
+            print(results[:5])
+            for manga in top_results:
+                manga_id = manga.get("id", "")
+                title = manga.get("titulo", "Sin título")
+                cover_url = manga.get("cover", "")
+                
+                if cover_url:
+                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                    temp_path = temp_file.name
+                    temp_file.close()
+                    
+                    if self.neko.download(cover_url, temp_path):
+                        caption = f"**{title}**\nID: `{manga_id}`"
+                        await safe_call(message.reply_photo, temp_path, caption=caption)
+                        os.remove(temp_path)
+                    else:
+                        await safe_call(message.reply_text, f"**{title}**\nID: `{manga_id}`")
+                else:
+                    await safe_call(message.reply_text, f"**{title}**\nID: `{manga_id}`")
+                
+                await asyncio.sleep(0.5)
+            
+            return
+        
+        elif text.startswith("/mangadl "):
+            parts = text.split()
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "Usa: `/mangadl MangaID` o `/mangadl MangaID -sc # -sv # -fc # -fv #`")
+                return
+            
+            manga_id = parts[1]
+            
+            start_chapter = None
+            start_volume = None
+            end_chapter = None
+            end_volume = None
+            
+            if "-sc" in text:
+                try:
+                    sc_idx = text.index("-sc")
+                    start_chapter = float(text[sc_idx:].split()[1])
+                except:
+                    await safe_call(message.reply_text, "Formato -sc inválido")
+                    return
+            
+            if "-sv" in text:
+                try:
+                    sv_idx = text.index("-sv")
+                    start_volume = float(text[sv_idx:].split()[1])
+                except:
+                    await safe_call(message.reply_text, "Formato -sv inválido")
+                    return
+            
+            if "-fc" in text:
+                try:
+                    fc_idx = text.index("-fc")
+                    end_chapter = float(text[fc_idx:].split()[1])
+                except:
+                    await safe_call(message.reply_text, "Formato -fc inválido")
+                    return
+            
+            if "-fv" in text:
+                try:
+                    fv_idx = text.index("-fv")
+                    end_volume = float(text[fv_idx:].split()[1])
+                except:
+                    await safe_call(message.reply_text, "Formato -fv inválido")
+                    return
+            
+            if start_chapter and start_volume:
+                await safe_call(message.reply_text, "❌ No puedes usar -sc y -sv al mismo tiempo")
+                return
+            
+            if end_chapter and end_volume:
+                await safe_call(message.reply_text, "❌ No puedes usar -fc y -fv al mismo tiempo")
+                return
+            
+            user_mode = user_manga_settings.get(user_id, {}).get("mode", "vol")
+            user_format = user_manga_settings.get(user_id, {}).get("format", "cbz")
+            
+            await self._process_manga_download(
+                message, manga_id, user_mode, user_format,
+                start_chapter, start_volume, end_chapter, end_volume, user_id
+            )
+            return
+        
+        elif text.startswith("/nh ") or text.startswith("/3h "):
             parts = text.split()
             if len(parts) < 2:
                 await safe_call(message.reply_text, "Usa: `/nh codigo` o `/3h codigo`")
@@ -330,6 +485,225 @@ class NekoTelegram:
             await self.app.download_media(rm, file_name=target_path, progress=progress_callback)
             download_completed = True
             await safe_call(progress_msg.edit_text, f"✅ Archivo guardado en `{target_path}`")
+    
+    async def _process_manga_download(self, message, manga_id, mode, format_choice,
+                                     start_chapter, start_volume, end_chapter, end_volume, user_id):
+        try:
+            progress_msg = await safe_call(message.reply_text, f"📚 Obteniendo información del manga {manga_id}...")
+            
+            manga_info = self.neko.get_manga_info(manga_id)
+            if not manga_info:
+                await safe_call(progress_msg.edit_text, "❌ No se pudo obtener información del manga")
+                return
+            
+            covers = manga_info.get("covers", [])
+            chapters = manga_info.get("chapters", [])
+            volumes_data = manga_info.get("volumes", {})
+            
+            if not chapters:
+                await safe_call(progress_msg.edit_text, "❌ No se encontraron capítulos para este manga")
+                return
+            
+            covers_dict = {}
+            for cover in covers:
+                covers_dict[cover['volume']] = cover['link']
+            
+            volumes_order = sorted(volumes_data.keys(), key=lambda x: self._sort_key(x))
+            
+            if mode == "vol":
+                await self._download_manga_by_volumes(
+                    progress_msg, manga_id, volumes_order, volumes_data, covers_dict,
+                    format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id
+                )
+            else:
+                await self._download_manga_by_chapters(
+                    progress_msg, manga_id, chapters, format_choice,
+                    start_chapter, start_volume, end_chapter, end_volume, user_id
+                )
+            
+        except Exception as e:
+            print(f"Error en _process_manga_download: {e}")
+            await safe_call(message.reply_text, f"❌ Error al procesar la descarga: {e}")
+    
+    async def _download_manga_by_volumes(self, progress_msg, manga_id, volumes_order, volumes_data, covers_dict,
+                                        format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
+        try:
+            total_volumes = len(volumes_order)
+            volume_index = 0
+            
+            for volume in volumes_order:
+                volume_index += 1
+                
+                if start_volume and volume != 'sin_volumen':
+                    if self._sort_key(volume) < self._sort_key(str(start_volume)):
+                        continue
+                
+                if end_volume and volume != 'sin_volumen':
+                    if self._sort_key(volume) > self._sort_key(str(end_volume)):
+                        break
+                
+                await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume} ({volume_index}/{total_volumes})...")
+                
+                volume_chapters = volumes_data[volume]
+                volume_chapters.sort(key=lambda x: self._sort_key(x['chapter']))
+                
+                all_volume_images = []
+                chapter_range = []
+                
+                for chapter in volume_chapters:
+                    chapter_num = chapter['chapter']
+                    
+                    if start_chapter and self._sort_key(chapter_num) < self._sort_key(str(start_chapter)):
+                        continue
+                    
+                    if end_chapter and self._sort_key(chapter_num) > self._sort_key(str(end_chapter)):
+                        break
+                    
+                    chapter_range.append(float(chapter_num) if chapter_num.replace('.', '', 1).isdigit() else chapter_num)
+                    
+                    image_links = self.neko.download_chapter(chapter['id'])
+                    if image_links:
+                        all_volume_images.extend(image_links)
+                    await asyncio.sleep(0.5)
+                
+                if not all_volume_images:
+                    continue
+                
+                if chapter_range:
+                    min_chap = min(chapter_range)
+                    max_chap = max(chapter_range)
+                    
+                    if volume == 'sin_volumen':
+                        volume_name = f"Capítulos {min_chap}-{max_chap}"
+                        
+                        known_volumes = [v for v in volumes_order if v != 'sin_volumen']
+                        if known_volumes:
+                            last_known_vol = max([float(v) for v in known_volumes if v.replace('.', '', 1).isdigit()], default=1)
+                            next_vol_num = int(last_known_vol) + 1
+                            volume_name = f"Volumen {next_vol_num} ({min_chap}-{max_chap} Incomplete)"
+                    else:
+                        volume_name = f"Volumen {volume}"
+                        
+                        if chapter_range:
+                            if len(chapter_range) > 1:
+                                volume_name = f"Volumen {volume} ({min_chap}-{max_chap})"
+                            else:
+                                volume_name = f"Volumen {volume} ({min_chap})"
+                
+                if format_choice == "cbz":
+                    archive_path = self.neko.create_cbz(volume_name, all_volume_images)
+                else:
+                    archive_path = self.neko.create_pdf(volume_name, all_volume_images)
+                
+                if archive_path and os.path.exists(archive_path):
+                    cover_url = covers_dict.get(volume, "")
+                    
+                    if cover_url:
+                        temp_cover = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                        temp_cover_path = temp_cover.name
+                        temp_cover.close()
+                        
+                        if self.neko.download(cover_url, temp_cover_path):
+                            await self.app.send_document(
+                                progress_msg.chat.id,
+                                archive_path,
+                                thumb=temp_cover_path,
+                                caption=f"📚 {volume_name}"
+                            )
+                            os.remove(temp_cover_path)
+                        else:
+                            await self.app.send_document(
+                                progress_msg.chat.id,
+                                archive_path,
+                                caption=f"📚 {volume_name}"
+                            )
+                    else:
+                        await self.app.send_document(
+                            progress_msg.chat.id,
+                            archive_path,
+                            caption=f"📚 {volume_name}"
+                        )
+                    
+                    os.remove(archive_path)
+                
+                await asyncio.sleep(1)
+            
+            await safe_call(progress_msg.edit_text, "✅ Descarga de volúmenes completada")
+            
+        except Exception as e:
+            print(f"Error en _download_manga_by_volumes: {e}")
+            await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
+    
+    async def _download_manga_by_chapters(self, progress_msg, manga_id, chapters, format_choice,
+                                         start_chapter, start_volume, end_chapter, end_volume, user_id):
+        try:
+            chapters.sort(key=lambda x: self._sort_key(x['chapter']))
+            
+            filtered_chapters = []
+            
+            for chapter in chapters:
+                chapter_num = chapter['chapter']
+                volume = chapter['volume'] if chapter['volume'] else 'sin_volumen'
+                
+                if start_chapter and self._sort_key(chapter_num) < self._sort_key(str(start_chapter)):
+                    continue
+                
+                if end_chapter and self._sort_key(chapter_num) > self._sort_key(str(end_chapter)):
+                    break
+                
+                if start_volume and volume != 'sin_volumen':
+                    if self._sort_key(volume) < self._sort_key(str(start_volume)):
+                        continue
+                
+                if end_volume and volume != 'sin_volumen':
+                    if self._sort_key(volume) > self._sort_key(str(end_volume)):
+                        break
+                
+                filtered_chapters.append(chapter)
+            
+            total_chapters = len(filtered_chapters)
+            
+            for idx, chapter in enumerate(filtered_chapters):
+                chapter_num = chapter['chapter']
+                chapter_id = chapter['id']
+                
+                await safe_call(progress_msg.edit_text, f"📖 Descargando capítulo {chapter_num} ({idx+1}/{total_chapters})...")
+                
+                image_links = self.neko.download_chapter(chapter_id)
+                
+                if not image_links:
+                    continue
+                
+                chapter_name = f"Capítulo {chapter_num}"
+                
+                if format_choice == "cbz":
+                    archive_path = self.neko.create_cbz(chapter_name, image_links)
+                else:
+                    archive_path = self.neko.create_pdf(chapter_name, image_links)
+                
+                if archive_path and os.path.exists(archive_path):
+                    await self.app.send_document(
+                        progress_msg.chat.id,
+                        archive_path,
+                        caption=f"📖 {chapter_name}"
+                    )
+                    os.remove(archive_path)
+                
+                await asyncio.sleep(1)
+            
+            await safe_call(progress_msg.edit_text, "✅ Descarga de capítulos completada")
+            
+        except Exception as e:
+            print(f"Error en _download_manga_by_chapters: {e}")
+            await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
+    
+    def _sort_key(self, val):
+        if not val or val == 'sin_volumen':
+            return (float('inf'), '')
+        try:
+            return (float(val), '')
+        except ValueError:
+            return (float('inf'), val)
     
     async def _download_hitomi_raw(self, message, g, pages, titulo, progress_msg, start_page, end_page, total_pages, user_id):
         batch_size = 10
