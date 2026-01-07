@@ -493,9 +493,7 @@ class NekoTelegram:
         tag_lines = []
         for category, items in tags.items():
             if items:
-                items_str = ", ".join(items[:5])
-                if len(items) > 5:
-                    items_str += f" y {len(items)-5} más"
+                items_str = ", ".join(items)
                 tag_lines.append(f"**{category}:** {items_str}")
         return "\n".join(tag_lines)
     
