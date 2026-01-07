@@ -547,7 +547,7 @@ class NekoTelegram:
                 )
             else:
                 await self._download_manga_by_chapters(
-                    progress_msg, manga_id, chapters, format_choice,
+                    progress_msg, manga_id, chapters, covers_dict, format_choice,
                     start_chapter, start_volume, end_chapter, end_volume, user_id
                 )
             
@@ -665,11 +665,18 @@ class NekoTelegram:
             print(f"Error en _download_manga_by_volumes: {e}")
             await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
     
-    async def _download_manga_by_chapters(self, progress_msg, manga_id, chapters, format_choice,
+    async def _download_manga_by_chapters(self, progress_msg, manga_id, chapters, covers_dict, format_choice,
                                          start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
             user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
             chapters.sort(key=lambda x: self._sort_key(x['chapter']))
+            
+            default_cover = ""
+            if '1' in covers_dict:
+                default_cover = covers_dict['1']
+            elif covers_dict:
+                first_vol = list(covers_dict.keys())[0]
+                default_cover = covers_dict[first_vol]
             
             filtered_chapters = []
             
@@ -698,6 +705,7 @@ class NekoTelegram:
             for idx, chapter in enumerate(filtered_chapters):
                 chapter_num = chapter['chapter']
                 chapter_id = chapter['id']
+                volume = chapter['volume'] if chapter['volume'] else 'sin_volumen'
                 
                 await safe_call(progress_msg.edit_text, f"📖 Descargando capítulo {chapter_num} ({idx+1}/{total_chapters}) en {user_lang.upper()}...")
                 
@@ -714,11 +722,34 @@ class NekoTelegram:
                     archive_path = self.neko.create_pdf(chapter_name, image_links)
                 
                 if archive_path and os.path.exists(archive_path):
-                    await self.app.send_document(
-                        progress_msg.chat.id,
-                        archive_path,
-                        caption=f"📖 {chapter_name}"
-                    )
+                    cover_url = covers_dict.get(volume, default_cover)
+                    
+                    if cover_url:
+                        temp_cover = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                        temp_cover_path = temp_cover.name
+                        temp_cover.close()
+                        
+                        if self.neko.download(cover_url, temp_cover_path):
+                            await self.app.send_document(
+                                progress_msg.chat.id,
+                                archive_path,
+                                thumb=temp_cover_path,
+                                caption=f"📖 {chapter_name}"
+                            )
+                            os.remove(temp_cover_path)
+                        else:
+                            await self.app.send_document(
+                                progress_msg.chat.id,
+                                archive_path,
+                                caption=f"📖 {chapter_name}"
+                            )
+                    else:
+                        await self.app.send_document(
+                            progress_msg.chat.id,
+                            archive_path,
+                            caption=f"📖 {chapter_name}"
+                        )
+                    
                     os.remove(archive_path)
                 
                 await asyncio.sleep(1)
