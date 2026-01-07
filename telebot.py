@@ -40,6 +40,7 @@ class NekoTelegram:
         self.neko = Neko()
         self.app = Client("nekobot", api_id=int(api_id), api_hash=api_hash, bot_token=bot_token)
         self.flask_thread = None
+        self.me_id = None
         
         @self.app.on_message(filters.text & filters.private)
         async def _handle_message(client: Client, message: Message):
@@ -48,6 +49,12 @@ class NekoTelegram:
                 await self.lista_cmd()
                 set_cmd = True
             await self._handle_message(client, message)
+    
+    async def get_me_id(self):
+        if not self.me_id:
+            me = await self.app.get_me()
+            self.me_id = me.id
+        return self.me_id
     
     def start_flask(self):
         if self.flask_thread and self.flask_thread.is_alive():
@@ -74,6 +81,7 @@ class NekoTelegram:
         if not message.text:
             return
         text = message.text.strip()
+        user_id = message.from_user.id
         
         if text.startswith("/setfile "):
             parts = text.split()
@@ -84,7 +92,7 @@ class NekoTelegram:
             if format_option not in ["cbz", "pdf", "raw"]:
                 await safe_call(message.reply_text, "Formato inválido. Usa: cbz, pdf o raw")
                 return
-            user_settings[message.from_user.id] = format_option
+            user_settings[user_id] = format_option
             await safe_call(message.reply_text, f"✅ Formato configurado a: **{format_option.upper()}**")
             return
         
@@ -93,11 +101,57 @@ class NekoTelegram:
             if len(parts) < 2:
                 await safe_call(message.reply_text, "Usa: `/nh codigo` o `/3h codigo`")
                 return
+            
+            command = text.split()[0]
             code = parts[1]
-            user_id = message.from_user.id
+            start_page = 1
+            end_page = None
+            single_page = None
+            
+            if "-s" in text:
+                try:
+                    s_idx = text.index("-s")
+                    start_page = int(text[s_idx:].split()[1])
+                except:
+                    await safe_call(message.reply_text, "Formato -s inválido")
+                    return
+            
+            if "-f" in text:
+                try:
+                    f_idx = text.index("-f")
+                    end_page = int(text[f_idx:].split()[1])
+                except:
+                    await safe_call(message.reply_text, "Formato -f inválido")
+                    return
+            
+            if "-p" in text:
+                try:
+                    p_idx = text.index("-p")
+                    single_page = int(text[p_idx:].split()[1])
+                except:
+                    await safe_call(message.reply_text, "Formato -p inválido")
+                    return
+            
             format_choice = user_settings.get(user_id, "cbz")
-            result = self.neko.vnh(code) if text.startswith("/nh ") else self.neko.v3h(code)
-            await self._process_gallery_json(message, result, code, format_choice)
+            result = self.neko.vnh(code) if command == "/nh" else self.neko.v3h(code)
+            
+            if single_page:
+                images = result.get("image_links", [])
+                if images and 0 < single_page <= len(images):
+                    selected_url = images[single_page-1]
+                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                    temp_path = temp_file.name
+                    temp_file.close()
+                    if self.neko.download(selected_url, temp_path):
+                        await safe_call(message.reply_photo, temp_path, caption=f"Página {single_page}/{len(images)}")
+                        os.remove(temp_path)
+                    else:
+                        await safe_call(message.reply_text, f"Error descargando página {single_page}")
+                else:
+                    await safe_call(message.reply_text, f"Página {single_page} no encontrada")
+                return
+            
+            await self._process_gallery_json_with_range(message, result, code, format_choice, start_page, end_page, user_id)
         
         elif text.startswith("/snh ") or text.startswith("/s3h "):
             parts = text.split(maxsplit=1)
@@ -106,7 +160,7 @@ class NekoTelegram:
                 return
             search = parts[1]
             result = self.neko.snh(search) if text.startswith("/snh ") else self.neko.s3h(search)
-            await self._process_search_json(message, result)
+            await self._process_search_json(message, result, user_id)
 
         elif text.startswith("/hito"):
             parts = text.split()
@@ -175,7 +229,6 @@ class NekoTelegram:
                     await safe_call(message.reply_text, f"Error procesando página única: {e}")
                     return
             
-            user_id = message.from_user.id
             format_choice = user_settings.get(user_id, "cbz")
             
             result_first = self.neko.hito(g, 1)
@@ -205,9 +258,9 @@ class NekoTelegram:
             progress_msg = await safe_call(message.reply_text, f"Preparando descarga de {g}...")
             
             if format_choice == "raw":
-                await self._download_hitomi_raw(g, pages_to_download, titulo, progress_msg, start_page, end_page, total_pages)
+                await self._download_hitomi_raw(message, g, pages_to_download, titulo, progress_msg, start_page, end_page, total_pages, user_id)
             else:
-                await self._download_hitomi_archive(g, pages_to_download, titulo, format_choice, progress_msg, start_page, end_page, total_pages)
+                await self._download_hitomi_archive(g, pages_to_download, titulo, format_choice, progress_msg, start_page, end_page, total_pages, user_id)
         
         elif text.startswith("/up"):
             parts = text.split(maxsplit=1)
@@ -278,7 +331,7 @@ class NekoTelegram:
             download_completed = True
             await safe_call(progress_msg.edit_text, f"✅ Archivo guardado en `{target_path}`")
     
-    async def _download_hitomi_raw(self, g, pages, titulo, progress_msg, start_page, end_page, total_pages):
+    async def _download_hitomi_raw(self, message, g, pages, titulo, progress_msg, start_page, end_page, total_pages, user_id):
         batch_size = 10
         downloaded_images = []
         current_batch = []
@@ -291,8 +344,10 @@ class NekoTelegram:
                 
                 datos_imagen = result["img"]
                 imagen_decodificada = base64.b64decode(datos_imagen)
-                digitos = len(str(total_pages))
-                nombre_salida = f"{page_num:0{digitos}d}.png"
+                pagina_actual = int(result["actual_page"])
+                paginas_totales = int(result["total_pages"])
+                digitos = len(str(paginas_totales))
+                nombre_salida = f"{pagina_actual:0{digitos}d}.png"
                 
                 with open(nombre_salida, 'wb') as archivo_imagen:
                     archivo_imagen.write(imagen_decodificada)
@@ -304,10 +359,10 @@ class NekoTelegram:
                 if start_page != 1 or end_page != total_pages:
                     range_info = f" (Progreso limitado al rango {start_page}-{end_page})"
                 
-                await safe_call(progress_msg.edit_text, f"Progreso de descarga de {g} {idx+1}/{len(pages)}{range_info}")
+                await safe_call(progress_msg.edit_text, f"Progreso de descarga de {g} {idx+1}/{len(pages)}{range_info} - Página {pagina_actual}/{paginas_totales}")
                 
                 if len(current_batch) >= batch_size:
-                    await self._send_photo_batch(message=None, photo_paths=current_batch, batch_number=(idx//batch_size)+1)
+                    await self._send_photo_batch(message, photo_paths=current_batch, batch_number=(idx//batch_size)+1, user_id=user_id)
                     for photo in current_batch:
                         try:
                             os.remove(photo)
@@ -321,7 +376,7 @@ class NekoTelegram:
                 continue
         
         if current_batch:
-            await self._send_photo_batch(message=None, photo_paths=current_batch, batch_number=(len(pages)//batch_size)+1)
+            await self._send_photo_batch(message, photo_paths=current_batch, batch_number=(len(pages)//batch_size)+1, user_id=user_id)
             for photo in current_batch:
                 try:
                     os.remove(photo)
@@ -330,7 +385,7 @@ class NekoTelegram:
         
         await safe_call(progress_msg.edit_text, f"✅ Descarga RAW completada: {titulo}")
     
-    async def _download_hitomi_archive(self, g, pages, titulo, format_choice, progress_msg, start_page, end_page, total_pages):
+    async def _download_hitomi_archive(self, g, pages, titulo, format_choice, progress_msg, start_page, end_page, total_pages, user_id):
         temp_dir = tempfile.mkdtemp()
         downloaded_count = 0
         
@@ -340,10 +395,12 @@ class NekoTelegram:
                 if "error" in result:
                     continue
                 
+                pagina_actual = int(result["actual_page"])
+                paginas_totales = int(result["total_pages"])
                 datos_imagen = result["img"]
                 imagen_decodificada = base64.b64decode(datos_imagen)
-                digitos = len(str(total_pages))
-                nombre_salida = f"{page_num:0{digitos}d}.png"
+                digitos = len(str(paginas_totales))
+                nombre_salida = f"{pagina_actual:0{digitos}d}.png"
                 save_path = os.path.join(temp_dir, nombre_salida)
                 
                 with open(save_path, 'wb') as archivo_imagen:
@@ -355,7 +412,7 @@ class NekoTelegram:
                 if start_page != 1 or end_page != total_pages:
                     range_info = f" (Progreso limitado al rango {start_page}-{end_page})"
                 
-                await safe_call(progress_msg.edit_text, f"Progreso de descarga de {g} {idx+1}/{len(pages)}{range_info}")
+                await safe_call(progress_msg.edit_text, f"Progreso de descarga de {g} {idx+1}/{len(pages)}{range_info} - Página {pagina_actual}/{paginas_totales}")
                 
             except Exception as e:
                 print(f"Error descargando página {page_num}: {e}")
@@ -382,7 +439,7 @@ class NekoTelegram:
         
         shutil.rmtree(temp_dir, ignore_errors=True)
     
-    async def _send_photo_batch(self, message, photo_paths, batch_number):
+    async def _send_photo_batch(self, message, photo_paths, batch_number, user_id):
         media_group = []
         for photo_path in photo_paths:
             try:
@@ -392,11 +449,70 @@ class NekoTelegram:
         
         if media_group:
             try:
-                await self.app.send_media_group(chat_id=message.chat.id if message else self.app.get_me().id, media=media_group)
+                await self.app.send_media_group(chat_id=message.chat.id, media=media_group)
             except Exception as e:
                 print(f"Error enviando grupo de fotos: {e}")
     
-    async def _send_photos_in_batches(self, message, image_urls, batch_size=10):
+    async def _process_gallery_json_with_range(self, message, result, code, format_choice, start_page, end_page, user_id):
+        if "error" in result:
+            await safe_call(message.reply_text, f"Error: `{result['error']}`")
+            return
+        
+        nombre = result.get("title", "Sin titulo")
+        all_images = result.get("image_links", [])
+        tags = result.get("tags", {})
+        
+        if not all_images:
+            await safe_call(message.reply_text, "No hay imagenes")
+            return
+        
+        total_images = len(all_images)
+        
+        if end_page is None:
+            end_page = total_images
+        
+        start_page = max(1, start_page)
+        end_page = min(total_images, end_page)
+        
+        if start_page > end_page:
+            start_page, end_page = end_page, start_page
+        
+        images = all_images[start_page-1:end_page]
+        
+        caption = f"**{nombre}**\nCódigo: `{code}`\nRango: {start_page}-{end_page} de {total_images}\n\n{self._format_tags(tags)}"
+        
+        if images:
+            await safe_call(message.reply_photo, images[0], caption=caption)
+        
+        if len(images) > 1:
+            if format_choice == "cbz":
+                temp_dir = "temp_cbz"
+                os.makedirs(temp_dir, exist_ok=True)
+                for i, img_url in enumerate(images):
+                    img_path = os.path.join(temp_dir, f"{i+start_page:04d}.jpg")
+                    self.neko.download(img_url, img_path)
+                    await asyncio.sleep(0.5)
+                cbz_path = self.neko.create_cbz(nombre, [os.path.join(temp_dir, f) for f in sorted(os.listdir(temp_dir))])
+                if cbz_path and os.path.exists(cbz_path):
+                    await safe_call(message.reply_document, cbz_path)
+                    os.remove(cbz_path)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            elif format_choice == "pdf":
+                temp_dir = "temp_pdf"
+                os.makedirs(temp_dir, exist_ok=True)
+                for i, img_url in enumerate(images):
+                    img_path = os.path.join(temp_dir, f"{i+start_page:04d}.jpg")
+                    self.neko.download(img_url, img_path)
+                    await asyncio.sleep(0.5)
+                pdf_path = self.neko.create_pdf(nombre, [os.path.join(temp_dir, f) for f in sorted(os.listdir(temp_dir))])
+                if pdf_path and os.path.exists(pdf_path):
+                    await safe_call(message.reply_document, pdf_path)
+                    os.remove(pdf_path)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            elif format_choice == "raw":
+                await self._send_photos_in_batches(message, images[1:], user_id=user_id)
+    
+    async def _send_photos_in_batches(self, message, image_urls, batch_size=10, user_id=None):
         for i in range(0, len(image_urls), batch_size):
             batch = image_urls[i:i+batch_size]
             media_group = []
@@ -420,47 +536,7 @@ class NekoTelegram:
                         pass
                 await asyncio.sleep(1)
     
-    async def _process_gallery_json(self, message, result, code, format_choice):
-        if "error" in result:
-            await safe_call(message.reply_text, f"Error: `{result['error']}`")
-            return
-        nombre = result.get("title", "Sin titulo")
-        images = result.get("image_links", [])
-        tags = result.get("tags", {})
-        if not images:
-            await safe_call(message.reply_text, "No hay imagenes")
-            return
-        caption = f"**{nombre}**\nCódigo: `{code}`\n\n{self._format_tags(tags)}"
-        await safe_call(message.reply_photo, images[0], caption=caption)
-        if len(images) > 1:
-            if format_choice == "cbz":
-                temp_dir = "temp_cbz"
-                os.makedirs(temp_dir, exist_ok=True)
-                for i, img_url in enumerate(images):
-                    img_path = os.path.join(temp_dir, f"{i:04d}.jpg")
-                    self.neko.download(img_url, img_path)
-                    await asyncio.sleep(0.5)
-                cbz_path = self.neko.create_cbz(nombre, [os.path.join(temp_dir, f) for f in sorted(os.listdir(temp_dir))])
-                if cbz_path and os.path.exists(cbz_path):
-                    await safe_call(message.reply_document, cbz_path)
-                    os.remove(cbz_path)
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            elif format_choice == "pdf":
-                temp_dir = "temp_pdf"
-                os.makedirs(temp_dir, exist_ok=True)
-                for i, img_url in enumerate(images):
-                    img_path = os.path.join(temp_dir, f"{i:04d}.jpg")
-                    self.neko.download(img_url, img_path)
-                    await asyncio.sleep(0.5)
-                pdf_path = self.neko.create_pdf(nombre, [os.path.join(temp_dir, f) for f in sorted(os.listdir(temp_dir))])
-                if pdf_path and os.path.exists(pdf_path):
-                    await safe_call(message.reply_document, pdf_path)
-                    os.remove(pdf_path)
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            elif format_choice == "raw":
-                await self._send_photos_in_batches(message, images[1:])
-    
-    async def _process_search_json(self, message, result):
+    async def _process_search_json(self, message, result, user_id):
         if "error" in result:
             await safe_call(message.reply_text, f"Error: `{result['error']}`")
             return
