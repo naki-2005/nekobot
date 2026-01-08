@@ -1365,7 +1365,7 @@ class NekoTelegram:
             await safe_call(message.reply_text, "❌ No hay enlace magnet disponible")
             return
         
-        download_path = os.path.join(os.getcwd(), "downloads", str(user_id))
+        download_path = os.path.join(os.getcwd(), "vault", str(user_id))
         os.makedirs(download_path, exist_ok=True)
         
         status_msg = await safe_call(message.reply_text, "⏳ Iniciando descarga torrent...")
@@ -1373,16 +1373,18 @@ class NekoTelegram:
         
         try:
             download_generator = self.neko.download_magnet(magnet, download_path)
+            final_path = None
             
             async for progress_text in download_generator:
                 current_time = time.time()
                 if current_time - last_update_time >= 10:
                     await safe_call(status_msg.edit_text, progress_text)
                     last_update_time = current_time
+                
+                if not progress_text.startswith("⏳"):
+                    final_path = progress_text
             
-            final_path = await download_generator
-            
-            if os.path.exists(final_path):
+            if final_path and os.path.exists(final_path):
                 if os.path.isfile(final_path):
                     await self.app.send_document(
                         message.chat.id,
@@ -1403,11 +1405,11 @@ class NekoTelegram:
                             except Exception as e:
                                 print(f"Error enviando archivo {file_path}: {e}")
             
-            await safe_call(status_msg.edit_text, f"✅ Descarga completada y enviada\n📁 {os.path.basename(final_path)}")
+            await safe_call(status_msg.edit_text, f"✅ Descarga completada y enviada")
             
         except Exception as e:
             await safe_call(status_msg.edit_text, f"❌ Error en la descarga: {e}")
-
+            
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-A", "--api", help="API ID de Telegram")
