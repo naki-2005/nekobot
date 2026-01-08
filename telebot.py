@@ -1688,60 +1688,17 @@ class NekoTelegram:
             download_generator = self.neko.download_magnet(magnet, download_path)
             final_path = None
             last_progress = ""
-            torrent_name = ""
             
             async for progress_text in download_generator:
-                if progress_text.startswith("⏳"):
-                    if "COMPLETADO" in progress_text:
-                        final_path = progress_text.split(" ")[1]
-                    else:
-                        lines = progress_text.split("\n")
-                        if len(lines) >= 2:
-                            progress_percent = float(lines[0].split(" ")[1].replace("%", ""))
-                            speed_kb = float(lines[1].split(" ")[1])
-                            speed_mb = speed_kb / 1024
-                            time_str = lines[2].split(" ")[1] if len(lines) > 2 else "00:00:00"
-                            
-                            if not torrent_name and hasattr(self.neko, 'active_downloads'):
-                                for handle in self.neko.active_downloads.values():
-                                    if handle.status().state == lt.torrent_status.downloading:
-                                        torrent_name = handle.name() or ""
-                                        break
-                            
-                            if not torrent_name:
-                                torrent_name = "Descarga en curso"
-                            
-                            if len(torrent_name) > 50:
-                                torrent_name = torrent_name[:47] + "..."
-                            
-                            bar_length = 20
-                            filled_length = int(bar_length * progress_percent / 100)
-                            bar = "█" * filled_length + "▒" * (bar_length - filled_length)
-                            
-                            if hasattr(self.neko, 'active_downloads'):
-                                for handle in self.neko.active_downloads.values():
-                                    if handle.status().state == lt.torrent_status.downloading:
-                                        s = handle.status()
-                                        current_mb = s.total_done / (1024 * 1024)
-                                        total_mb = s.total_wanted / (1024 * 1024)
-                                        break
-                                else:
-                                    current_mb = 0
-                                    total_mb = 0
-                            else:
-                                current_mb = 0
-                                total_mb = 0
-                            
-                            progress_msg = f"📥 Descargando: {torrent_name}\n"
-                            progress_msg += f"📊 Progreso: {progress_percent:.2f}%\n"
-                            progress_msg += f"📉 [{bar}]\n"
-                            progress_msg += f"📦 Tamaño: {current_mb:.2f} MB / {total_mb:.2f} MB\n"
-                            progress_msg += f"🚀 Velocidad: {speed_mb:.1f} MB/s\n"
-                            progress_msg += f"⏱️ Tiempo: {time_str}"
-                            
-                            if progress_msg != last_progress:
-                                await safe_call(status_msg.edit_text, progress_msg)
-                                last_progress = progress_msg
+                if progress_text.startswith("📥"):
+                    if progress_text != last_progress:
+                        await safe_call(status_msg.edit_text, progress_text)
+                        last_progress = progress_text
+                elif progress_text.startswith("✅") and "COMPLETADO" in progress_text:
+                    continue
+                else:
+                    if os.path.exists(progress_text):
+                        final_path = progress_text
             
             if final_path and os.path.exists(final_path):
                 if os.path.isfile(final_path):
@@ -1774,7 +1731,7 @@ class NekoTelegram:
                 await status_msg.delete()
             except:
                 pass
-            await safe_call(message.reply_text, f"❌ Error en la descarga")
+            await safe_call(message.reply_text, f"❌ Error en la descarga") 
             
     def run(self):
         print("[INFO] Iniciando bot de Telegram...")
