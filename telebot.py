@@ -72,11 +72,8 @@ class NekoTelegram:
         user_id = callback_query.from_user.id
         
         if data.startswith("auto_"):
-            parts = data.split("_")
-            if len(parts) < 2:
-                return
-                
-            action = parts[1]
+            action = data[5:]
+            
             if action == "info":
                 await callback_query.answer("Este boton solo es de información", show_alert=True)
                 return
@@ -89,9 +86,11 @@ class NekoTelegram:
                     "torrents": False
                 }
             
-            current_state = user_auto_settings[user_id].get(action, False)
-            user_auto_settings[user_id][action] = not current_state
-            await self._show_auto_menu(callback_query.message, user_id)
+            if action in user_auto_settings[user_id]:
+                current_state = user_auto_settings[user_id].get(action, False)
+                user_auto_settings[user_id][action] = not current_state
+                await self._show_auto_menu(callback_query.message, user_id)
+            
             await callback_query.answer()
             return
         
@@ -154,7 +153,7 @@ class NekoTelegram:
             self.current_positions[cache_key] = new_pos
             await self._update_nyaa_message(callback_query.message, results, new_pos, query_hash)
             await callback_query.answer()
-
+            
     async def _send_document_with_progress(self, chat_id, document_path, caption="", thumb=None):
         file_size_mb = os.path.getsize(document_path) / (1024 * 1024)
         
@@ -976,7 +975,7 @@ class NekoTelegram:
         text += f"{file_icon} **Archivos a Vault** - Sube archivos automáticamente\n"
         text += f"{doujin_icon} **Doujins** - Detecta enlaces de doujins\n"
         text += f"{manga_icon} **Mangas** - Detecta enlaces de manga\n"
-        text += f"{torrent_icon} **Torrents** - Detecta enlaces de torrent\n\n"
+        text += f"{torrent_icon} **Torrents** - Detecta enlaces de torrent\n"
         
         keyboard = [
             [
@@ -988,8 +987,8 @@ class NekoTelegram:
                 InlineKeyboardButton(f"{torrent_icon} Torrents", callback_data="auto_torrents")
             ],
             [
-                InlineKeyboardButton("📖 NH", callback_data="auto_info"),
-                InlineKeyboardButton("📖 3H", callback_data="auto_info")
+                InlineKeyboardButton("ℹ️ Info", callback_data="auto_info"),
+                InlineKeyboardButton("❌ Cerrar", callback_data="auto_close")
             ]
         ]
         
