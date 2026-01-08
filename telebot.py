@@ -1358,7 +1358,7 @@ class NekoTelegram:
             return magnet
         except Exception as e:
             raise Exception(f"Error convirtiendo torrent a magnet: {e}")
-    
+            
     async def _start_torrent_download(self, message, result, user_id):
         magnet = result.get("magnet", "")
         if not magnet:
@@ -1409,7 +1409,13 @@ class NekoTelegram:
             
         except Exception as e:
             await safe_call(status_msg.edit_text, f"❌ Error en la descarga: {e}")
-            
+
+
+    def run(self):
+        print("[INFO] Iniciando bot de Telegram...")
+        self.app.run()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-A", "--api", help="API ID de Telegram")
