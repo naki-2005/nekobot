@@ -127,7 +127,60 @@ class NekoTelegram:
             self.current_positions[cache_key] = new_pos
             await self._update_nyaa_message(callback_query.message, results, new_pos, query_hash)
             await callback_query.answer()
-    
+            
+        async def _send_document_with_progress(self, chat_id, document_path, caption="", thumb=None):
+        progress_msg = await safe_call(self.app.send_message, chat_id, "📤 Preparando envío...")
+        start_time = time.time()
+        upload_completed = False
+        current_bytes = 0
+        total_bytes = os.path.getsize(document_path)
+        
+        async def update_upload_progress():
+            last_update = time.time()
+            while not upload_completed:
+                if total_bytes > 0:
+                    elapsed = int(time.time() - start_time)
+                    formatted_time = format_time(elapsed)
+                    progress_ratio = current_bytes / total_bytes if total_bytes else 0
+                    bar_length = 20
+                    filled_length = int(bar_length * progress_ratio)
+                    bar = "█" * filled_length + "▒" * (bar_length - filled_length)
+                    current_mb = current_bytes / (1024 * 1024)
+                    total_mb = total_bytes / (1024 * 1024)
+                    
+                    if time.time() - last_update >= 10:
+                        await safe_call(
+                            progress_msg.edit_text,
+                            f"📤 Enviando archivo...\n"
+                            f"🕒 Tiempo: {formatted_time}\n"
+                            f"📊 Progreso: {current_mb:.2f} MB / {total_mb:.2f} MB\n"
+                            f"📉 [{bar}] {progress_ratio*100:.1f}%\n"
+                            f"📄 Archivo: {os.path.basename(document_path)}"
+                        )
+                        last_update = time.time()
+                await asyncio.sleep(0.5)
+        
+        def upload_progress(current, total):
+            nonlocal current_bytes
+            current_bytes = current
+        
+        upload_task = asyncio.create_task(update_upload_progress())
+        
+        try:
+            await safe_call(self.app.send_document, 
+                           chat_id=chat_id, 
+                           document=document_path, 
+                           caption=caption,
+                           thumb=thumb,
+                           progress=upload_progress)
+            upload_completed = True
+            await upload_task
+            await safe_call(progress_msg.delete)
+        except Exception as e:
+            upload_completed = True
+            await upload_task
+            await safe_call(progress_msg.edit_text, f"❌ Error al enviar: {e}")
+            raise
     async def get_session(self):
         if not self.session:
             self.session = aiohttp.ClientSession()
@@ -1358,7 +1411,7 @@ class NekoTelegram:
             return magnet
         except Exception as e:
             raise Exception(f"Error convirtiendo torrent a magnet: {e}")
-            
+    
     async def _start_torrent_download(self, message, result, user_id):
         magnet = result.get("magnet", "")
         if not magnet:
@@ -1386,7 +1439,7 @@ class NekoTelegram:
             
             if final_path and os.path.exists(final_path):
                 if os.path.isfile(final_path):
-                    await self.app.send_document(
+                    await self._send_document_with_progress(
                         message.chat.id,
                         final_path,
                         caption=f"✅ Descarga completada: {os.path.basename(final_path)}"
@@ -1396,7 +1449,7 @@ class NekoTelegram:
                         for file in files:
                             file_path = os.path.join(root, file)
                             try:
-                                await self.app.send_document(
+                                await self._send_document_with_progress(
                                     message.chat.id,
                                     file_path,
                                     caption=f"📁 {os.path.basename(file_path)}"
@@ -1409,8 +1462,7 @@ class NekoTelegram:
             
         except Exception as e:
             await safe_call(status_msg.edit_text, f"❌ Error en la descarga: {e}")
-
-
+            
     def run(self):
         print("[INFO] Iniciando bot de Telegram...")
         self.app.run()
