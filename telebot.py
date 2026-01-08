@@ -624,6 +624,7 @@ class NekoTelegram:
             await self.app.download_media(rm, file_name=target_path, progress=progress_callback)
             download_completed = True
             await safe_call(progress_msg.edit_text, f"✅ Archivo guardado en `{target_path}`")
+        
         elif text.startswith("/nyaa ") or text.startswith("/nyaa18 "):
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
@@ -633,12 +634,12 @@ class NekoTelegram:
             search_term = parts[1]
             is_nsfw = text.startswith("/nyaa18 ")
             
-            await safe_call(message.reply_text, f"🔍 Buscando en {'Sukebei' if is_nsfw else 'Nyaa'}...")
+            search_msg = await safe_call(message.reply_text, f"🔍 Buscando en {'Sukebei' if is_nsfw else 'Nyaa'}...")
             
             results = self.neko.nyaa_fap(search_term) if is_nsfw else self.neko.nyaa_fun(search_term)
             
             if not results:
-                await safe_call(message.reply_text, "❌ No se encontraron resultados")
+                await safe_call(search_msg.edit_text, "❌ No se encontraron resultados")
                 return
             
             query_hash = hashlib.md5(f"{search_term}_{is_nsfw}".encode()).hexdigest()[:8]
@@ -652,7 +653,7 @@ class NekoTelegram:
             cache_key = f"{message.from_user.id}_{query_hash}"
             self.current_positions[cache_key] = 0
             
-            await self._update_nyaa_message(message, results, 0, query_hash)
+            await self._send_nyaa_message(search_msg, results, 0, query_hash)
             return
         
         elif text.startswith("/leech"):
@@ -1185,6 +1186,39 @@ class NekoTelegram:
                 tag_lines.append(f"**{category}:** {items_str}")
         return "\n".join(tag_lines)
     
+    async def _send_nyaa_message(self, message, results, position, query_hash):
+        result = results[position]
+        total = len(results)
+        
+        text = f"**Resultado {position+1}/{total}**\n"
+        text += f"**Nombre:** `{result['name']}`\n"
+        text += f"**Tamaño:** {result['size']}\n"
+        text += f"**Fecha:** {result['date']}\n"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("◀️", callback_data=f"nyaa_first_{query_hash}"),
+                InlineKeyboardButton("⏪", callback_data=f"nyaa_prev_{query_hash}"),
+                InlineKeyboardButton(f"{position+1}/{total}", callback_data="nyaa_page"),
+                InlineKeyboardButton("⏩", callback_data=f"nyaa_next_{query_hash}"),
+                InlineKeyboardButton("▶️", callback_data=f"nyaa_last_{query_hash}")
+            ],
+            [
+                InlineKeyboardButton("📎 Torrent", callback_data=f"nyaa_torrent_{query_hash}"),
+                InlineKeyboardButton("🧲 Magnet", callback_data=f"nyaa_magnet_{query_hash}")
+            ],
+            [
+                InlineKeyboardButton("🔽 Descargar", callback_data=f"nyaa_download_{query_hash}")
+            ]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await message.edit_text(text, reply_markup=reply_markup)
+        except:
+            await safe_call(message.reply_text, text, reply_markup=reply_markup)
+    
     async def _update_nyaa_message(self, message, results, position, query_hash):
         result = results[position]
         total = len(results)
@@ -1218,7 +1252,6 @@ class NekoTelegram:
         except FloodWait as e:
             await asyncio.sleep(e.value)
             await message.edit_text(text, reply_markup=reply_markup)
-    
     
     async def _handle_leech_command(self, message):
         user_id = message.from_user.id
