@@ -10,6 +10,7 @@ import base64
 import aiohttp
 import aiofiles
 import bencodepy
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pyrogram import Client, filters
 from pyrogram.types import Message, BotCommand, InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup
@@ -21,6 +22,8 @@ import hashlib
 set_cmd = False
 user_settings = {}
 user_manga_settings = {}
+user_auto_settings = {}
+user_nextnames = {}
 
 async def safe_call(func, *args, **kwargs):
     while True:
@@ -67,6 +70,24 @@ class NekoTelegram:
     async def _handle_callback_query(self, callback_query):
         data = callback_query.data
         user_id = callback_query.from_user.id
+        
+        if data.startswith("auto_"):
+            action = data.split("_")[1]
+            if action == "info":
+                await callback_query.answer("Este boton solo es de información", show_alert=True)
+                return
+            if user_id not in user_auto_settings:
+                user_auto_settings[user_id] = {
+                    "file_to_link": False,
+                    "doujins": False,
+                    "mangas": False,
+                    "torrents": False
+                }
+            current_state = user_auto_settings[user_id].get(action, False)
+            user_auto_settings[user_id][action] = not current_state
+            await self._show_auto_menu(callback_query.message, user_id)
+            await callback_query.answer()
+            return
         
         if data.startswith("nyaa_"):
             parts = data.split("_")
@@ -268,13 +289,17 @@ class NekoTelegram:
             BotCommand("mangafile", "Configurar formato de manga (cbz/pdf)"),
             BotCommand("mangadlset", "Configurar descarga por volumen o capítulo"),
             BotCommand("mangalang", "Configurar idioma para manga (en/es/ko/etc)"),
-            BotCommand("mangadl", "Descargar manga por ID")
+            BotCommand("mangadl", "Descargar manga por ID"),
+            BotCommand("auto", "Configurar acciones automáticas"),
+            BotCommand("nextnames", "Configurar nombres para próximos archivos")
         ])
         print("Comandos configurados en el bot")
     
     async def _handle_message(self, client: Client, message: Message):
         if not message.text:
+            await self._handle_auto_actions(message)
             return
+        
         text = message.text.strip()
         user_id = message.from_user.id
         
@@ -643,24 +668,43 @@ class NekoTelegram:
                 return
             
             vault_dir = os.path.join(os.getcwd(), "vault")
-            if custom_path:
-                target_path = os.path.join(vault_dir, custom_path)
+            
+            if user_id in user_nextnames:
+                pattern_info = user_nextnames[user_id]
+                pattern = pattern_info["pattern"]
+                current = pattern_info["current"]
+                start = pattern_info["start"]
+                end = pattern_info["end"]
+                
+                if current > end:
+                    await safe_call(message.reply_text, f"✅ Secuencia completada ({start}-{end})")
+                    del user_nextnames[user_id]
+                    return
+                
+                filename = pattern.replace("{no}", str(current).zfill(len(str(start)) if str(start).startswith("0") else 1))
+                
+                user_nextnames[user_id]["current"] = current + 1
+                
+                target_path = os.path.join(vault_dir, filename)
             else:
-                if rm.document:
-                    fname = rm.document.file_name
-                elif rm.photo:
-                    fname = "photo.jpg"
-                elif rm.video:
-                    fname = rm.video.file_name or "video.mp4"
-                elif rm.audio:
-                    fname = rm.audio.file_name or "audio.mp3"
-                elif rm.voice:
-                    fname = "voice.ogg"
-                elif rm.sticker:
-                    fname = "sticker.webp"
+                if custom_path:
+                    target_path = os.path.join(vault_dir, custom_path)
                 else:
-                    fname = "file.bin"
-                target_path = os.path.join(vault_dir, fname)
+                    if rm.document:
+                        fname = rm.document.file_name
+                    elif rm.photo:
+                        fname = "photo.jpg"
+                    elif rm.video:
+                        fname = rm.video.file_name or "video.mp4"
+                    elif rm.audio:
+                        fname = rm.audio.file_name or "audio.mp3"
+                    elif rm.voice:
+                        fname = "voice.ogg"
+                    elif rm.sticker:
+                        fname = "sticker.webp"
+                    else:
+                        fname = "file.bin"
+                    target_path = os.path.join(vault_dir, fname)
             
             os.makedirs(os.path.dirname(target_path), exist_ok=True)
             progress_msg = await safe_call(message.reply_text, "📥 Iniciando descarga...")
@@ -701,7 +745,17 @@ class NekoTelegram:
             asyncio.create_task(update_download_progress())
             await self.app.download_media(rm, file_name=target_path, progress=progress_callback)
             download_completed = True
-            await safe_call(progress_msg.edit_text, f"✅ Archivo guardado en `{target_path}`")
+            
+            if user_id in user_nextnames:
+                next_num = user_nextnames[user_id]["current"]
+                end_num = user_nextnames[user_id]["end"]
+                if next_num <= end_num:
+                    await safe_call(progress_msg.edit_text, f"✅ Archivo guardado como `{os.path.basename(target_path)}`\nPróximo: {next_num}/{end_num}")
+                else:
+                    await safe_call(progress_msg.edit_text, f"✅ Archivo guardado como `{os.path.basename(target_path)}`\n✅ Secuencia completada")
+                    del user_nextnames[user_id]
+            else:
+                await safe_call(progress_msg.edit_text, f"✅ Archivo guardado en `{target_path}`")
         
         elif text.startswith("/nyaa ") or text.startswith("/nyaa18 "):
             parts = text.split(maxsplit=1)
@@ -737,6 +791,199 @@ class NekoTelegram:
         elif text.startswith("/leech"):
             await self._handle_leech_command(message)
             return
+        
+        elif text.startswith("/auto"):
+            await self._show_auto_menu(message, user_id)
+            return
+        
+        elif text.startswith("/nextnames "):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                if user_id in user_nextnames:
+                    info = user_nextnames[user_id]
+                    await safe_call(message.reply_text, f"📝 Patrón actual: `{info['pattern']}`\nRango: {info['start']}-{info['end']}\nPróximo número: {info['current']}")
+                else:
+                    await safe_call(message.reply_text, "Usa: `/nextnames 1-10 Example {no}.ext`")
+                return
+            
+            pattern_str = parts[1]
+            match = re.match(r'(\d+)-(\d+)\s+(.+)', pattern_str)
+            if not match:
+                await safe_call(message.reply_text, "Formato inválido. Usa: `/nextnames 1-10 Example {no}.ext`")
+                return
+            
+            start_num = int(match.group(1))
+            end_num = int(match.group(2))
+            pattern = match.group(3)
+            
+            if "{no}" not in pattern:
+                await safe_call(message.reply_text, "El patrón debe contener `{no}`")
+                return
+            
+            if start_num > end_num:
+                await safe_call(message.reply_text, "El número inicial debe ser menor o igual al final")
+                return
+            
+            user_nextnames[user_id] = {
+                "pattern": pattern,
+                "start": start_num,
+                "end": end_num,
+                "current": start_num
+            }
+            
+            first_example = pattern.replace("{no}", str(start_num).zfill(len(str(start_num)) if str(start_num).startswith("0") else 1))
+            await safe_call(message.reply_text, f"✅ Patrón configurado\nRango: {start_num}-{end_num}\nPrimer archivo: `{first_example}`")
+            return
+        
+        else:
+            await self._handle_auto_actions(message)
+    
+    async def _handle_auto_actions(self, message):
+        user_id = message.from_user.id
+        
+        if user_id not in user_auto_settings:
+            return
+        
+        settings = user_auto_settings[user_id]
+        
+        if message.media and settings.get("file_to_link", False):
+            await self._auto_upload_file(message)
+            return
+        
+        if message.text:
+            text = message.text.strip()
+            
+            if settings.get("doujins", False):
+                doujin_match = self._extract_doujin_info(text)
+                if doujin_match:
+                    code, source = doujin_match
+                    await self._auto_download_doujin(message, code, source)
+                    return
+            
+            if settings.get("mangas", False):
+                manga_id = self._extract_manga_id(text)
+                if manga_id:
+                    await self._auto_download_manga(message, manga_id)
+                    return
+            
+            if settings.get("torrents", False):
+                if text.startswith("magnet:?") or text.endswith(".torrent"):
+                    await self._auto_download_torrent(message, text)
+                    return
+    
+    async def _auto_upload_file(self, message):
+        vault_dir = os.path.join(os.getcwd(), "vault")
+        
+        if message.document:
+            fname = message.document.file_name or "file.bin"
+        elif message.photo:
+            fname = "photo.jpg"
+        elif message.video:
+            fname = message.video.file_name or "video.mp4"
+        elif message.audio:
+            fname = message.audio.file_name or "audio.mp3"
+        elif message.voice:
+            fname = "voice.ogg"
+        elif message.sticker:
+            fname = "sticker.webp"
+        else:
+            return
+        
+        target_path = os.path.join(vault_dir, fname)
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        
+        progress_msg = await safe_call(message.reply_text, "📥 Subiendo automáticamente...")
+        
+        await self.app.download_media(message, file_name=target_path)
+        
+        await safe_call(progress_msg.edit_text, f"✅ Archivo subido automáticamente: `{fname}`")
+    
+    def _extract_doujin_info(self, text):
+        patterns = [
+            (r"https://nhentai\.net/g/(\d+)", "nh"),
+            (r"https://es\.3hentai\.net/d/(\d+)", "3h"),
+            (r"https://hitomi\.la/reader/(\d+)\.html", "hito"),
+            (r"https://hitomi\.la/galleries/(\d+)\.html", "hito")
+        ]
+        
+        for pattern, source in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1), source
+        return None
+    
+    async def _auto_download_doujin(self, message, code, source):
+        if source == "nh":
+            command = f"/nh {code}"
+        elif source == "3h":
+            command = f"/3h {code}"
+        elif source == "hito":
+            command = f"/hito {code}"
+        else:
+            return
+        
+        msg = message
+        msg.text = command
+        await self._handle_message(self.app, msg)
+    
+    def _extract_manga_id(self, text):
+        patterns = [
+            r"https://mangadex\.org/title/([a-f0-9-]{36})",
+            r"https://mangadex\.org/title/([a-f0-9-]{36})/",
+            r"https://mangadex\.org/title/([a-f0-9-]{36})/.+"
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1)
+        return None
+    
+    async def _auto_download_manga(self, message, manga_id):
+        msg = message
+        msg.text = f"/mangadl {manga_id}"
+        await self._handle_message(self.app, msg)
+    
+    async def _auto_download_torrent(self, message, text):
+        msg = message
+        msg.text = f"/leech {text}"
+        await self._handle_message(self.app, msg)
+    
+    async def _show_auto_menu(self, message, user_id):
+        if user_id not in user_auto_settings:
+            user_auto_settings[user_id] = {
+                "file_to_link": False,
+                "doujins": False,
+                "mangas": False,
+                "torrents": False
+            }
+        
+        settings = user_auto_settings[user_id]
+        
+        status_ftl = "🟢 Encendido" if settings["file_to_link"] else "🔴 Apagado"
+        status_doujins = "🟢 Encendido" if settings["doujins"] else "🔴 Apagado"
+        status_mangas = "🟢 Encendido" if settings["mangas"] else "🔴 Apagado"
+        status_torrents = "🟢 Encendido" if settings["torrents"] else "🔴 Apagado"
+        
+        keyboard = [
+            [InlineKeyboardButton("File to Link", callback_data="auto_info"),
+             InlineKeyboardButton(status_ftl, callback_data="auto_file_to_link")],
+            [InlineKeyboardButton("Doujins", callback_data="auto_info"),
+             InlineKeyboardButton(status_doujins, callback_data="auto_doujins")],
+            [InlineKeyboardButton("Mangas", callback_data="auto_info"),
+             InlineKeyboardButton(status_mangas, callback_data="auto_mangas")],
+            [InlineKeyboardButton("Torrents", callback_data="auto_info"),
+             InlineKeyboardButton(status_torrents, callback_data="auto_torrents")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = "Configure acciones automáticas:"
+        
+        if hasattr(message, 'edit_text'):
+            await safe_call(message.edit_text, text, reply_markup=reply_markup)
+        else:
+            await safe_call(message.reply_text, text, reply_markup=reply_markup)
     
     async def _process_manga_download(self, message, manga_id, mode, format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
