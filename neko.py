@@ -83,8 +83,7 @@ class Neko:
                 torrent_name = "unnamed"
             
             final_path = os.path.join(save_path, self.clean_name(torrent_name))
-            yield f"✅ Descarga completada en {elapsed_str}"
-            return final_path
+            yield final_path
             
         except Exception as e:
             self.log(f"❌ Error en download_magnet: {e}")
