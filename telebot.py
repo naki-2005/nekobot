@@ -1369,16 +1369,44 @@ class NekoTelegram:
         os.makedirs(download_path, exist_ok=True)
         
         status_msg = await safe_call(message.reply_text, "⏳ Iniciando descarga torrent...")
+        last_update_time = time.time()
         
         try:
-            await self.neko.download_magnet(magnet, download_path)
-            await safe_call(status_msg.edit_text, "✅ Descarga completada")
+            download_generator = self.neko.download_magnet(magnet, download_path)
+            
+            async for progress_text in download_generator:
+                current_time = time.time()
+                if current_time - last_update_time >= 10:
+                    await safe_call(status_msg.edit_text, progress_text)
+                    last_update_time = current_time
+            
+            final_path = await download_generator
+            
+            if os.path.exists(final_path):
+                if os.path.isfile(final_path):
+                    await self.app.send_document(
+                        message.chat.id,
+                        final_path,
+                        caption=f"✅ Descarga completada: {os.path.basename(final_path)}"
+                    )
+                elif os.path.isdir(final_path):
+                    for root, dirs, files in os.walk(final_path):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            try:
+                                await self.app.send_document(
+                                    message.chat.id,
+                                    file_path,
+                                    caption=f"📁 {os.path.basename(file_path)}"
+                                )
+                                await asyncio.sleep(0.5)
+                            except Exception as e:
+                                print(f"Error enviando archivo {file_path}: {e}")
+            
+            await safe_call(status_msg.edit_text, f"✅ Descarga completada y enviada\n📁 {os.path.basename(final_path)}")
+            
         except Exception as e:
             await safe_call(status_msg.edit_text, f"❌ Error en la descarga: {e}")
-    
-    def run(self):
-        print("[INFO] Iniciando bot de Telegram...")
-        self.app.run()
 
 def main():
     parser = argparse.ArgumentParser()
