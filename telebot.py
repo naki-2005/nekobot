@@ -950,50 +950,40 @@ class NekoTelegram:
         await self._handle_message(self.app, msg)
     
     async def _show_auto_menu(self, message, user_id):
-        if message.chat.type != "private":
-            return
+        if user_id not in user_auto_settings:
+            user_auto_settings[user_id] = {
+                "file_to_link": False,
+                "doujins": False,
+                "mangas": False,
+                "torrents": False
+            }
         
-        text = "🤖 **Neko Bot**\n\n"
-        text += "🔧 **Comandos disponibles:**\n"
-        text += "/nh - Descarga doujin de nhentai\n"
-        text += "/3h - Descarga doujin de 3hentai\n"
-        text += "/snh - Busca doujins en nhentai\n"
-        text += "/s3h - Busca doujins en 3hentai\n"
-        text += "/hito - Descarga de hitomi\n"
-        text += "/up - Subir archivo al vault\n"
-        text += "/setfile - Configurar formato\n"
-        text += "/mangasearch - Buscar manga\n"
-        text += "/mangafile - Formato de manga\n"
-        text += "/mangadlset - Modo de descarga\n"
-        text += "/mangalang - Idioma para manga\n"
-        text += "/mangadl - Descargar manga\n"
-        text += "/nyaa - Buscar en Nyaa\n"
-        text += "/nyaa18 - Buscar en Sukebei\n"
-        text += "/leech - Descargar torrent\n\n"
+        settings = user_auto_settings[user_id]
         
-        format_choice = user_settings.get(user_id, "cbz")
-        manga_format = user_manga_settings.get(user_id, {}).get("format", "cbz")
-        manga_mode = user_manga_settings.get(user_id, {}).get("mode", "vol")
-        manga_lang = user_manga_settings.get(user_id, {}).get("language", "en")
+        text = "🤖 **Configuración Automática**\n\n"
+        text += "Activa/desactiva las acciones que se ejecutarán automáticamente:\n\n"
         
-        mode_text = "volúmenes" if manga_mode == "vol" else "capítulos"
+        file_to_link_icon = "✅" if settings["file_to_link"] else "❌"
+        doujins_icon = "✅" if settings["doujins"] else "❌"
+        mangas_icon = "✅" if settings["mangas"] else "❌"
+        torrents_icon = "✅" if settings["torrents"] else "❌"
         
-        text += "📊 **Configuraciones actuales:**\n"
-        text += f"• Formato general: **{format_choice.upper()}**\n"
-        text += f"• Formato manga: **{manga_format.upper()}**\n"
-        text += f"• Modo manga: **{mode_text}**\n"
-        text += f"• Idioma manga: **{manga_lang.upper()}**\n"
+        text += f"{file_to_link_icon} **Archivos a Vault**: Subir automáticamente archivos recibidos\n"
+        text += f"{doujins_icon} **Doujins**: Descargar automáticamente enlaces de doujins\n"
+        text += f"{mangas_icon} **Mangas**: Descargar automáticamente enlaces de MangaDex\n"
+        text += f"{torrents_icon} **Torrents**: Descargar automáticamente magnet/torrent\n"
         
         keyboard = [
             [
-                InlineKeyboardButton("📖 NH", callback_data="menu_nh"),
-                InlineKeyboardButton("📖 3H", callback_data="menu_3h"),
-                InlineKeyboardButton("🎬 HITO", callback_data="menu_hito")
+                InlineKeyboardButton("📁 Archivos", callback_data="auto_file_to_link"),
+                InlineKeyboardButton("📖 Doujins", callback_data="auto_doujins")
             ],
             [
-                InlineKeyboardButton("📚 Manga", callback_data="menu_manga"),
-                InlineKeyboardButton("🧲 Torrent", callback_data="menu_torrent"),
-                InlineKeyboardButton("⚙️ Config", callback_data="menu_config")
+                InlineKeyboardButton("📚 Mangas", callback_data="auto_mangas"),
+                InlineKeyboardButton("🧲 Torrents", callback_data="auto_torrents")
+            ],
+            [
+                InlineKeyboardButton("ℹ️ Info", callback_data="auto_info")
             ]
         ]
         
@@ -1002,8 +992,8 @@ class NekoTelegram:
         try:
             await message.edit_text(text, reply_markup=reply_markup)
         except:
-            await safe_call(message.reply_text, text, reply_markup=reply_markup)
-    
+            await safe_call(message.reply_text, text, reply_markup=reply_markup)    
+            
     async def _process_manga_download(self, message, manga_id, mode, format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
             user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
