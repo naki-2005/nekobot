@@ -9,12 +9,14 @@ import threading
 import base64
 import aiohttp
 import aiofiles
+import bencodepy
 from concurrent.futures import ThreadPoolExecutor
 from pyrogram import Client, filters
-from pyrogram.types import Message, BotCommand, InputMediaPhoto
+from pyrogram.types import Message, BotCommand, InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup
 from pyrogram.errors import FloodWait
 from neko import Neko
 from server import run_flask
+import hashlib
 
 set_cmd = False
 user_settings = {}
@@ -47,6 +49,9 @@ class NekoTelegram:
         self.me_id = None
         self.session = None
         self.download_pool = ThreadPoolExecutor(max_workers=20)
+        self.nyaa_cache = {}
+        self.current_positions = {}
+        self.user_downloads = {}
         
         @self.app.on_message(filters.text & filters.private)
         async def _handle_message(client: Client, message: Message):
@@ -55,6 +60,73 @@ class NekoTelegram:
                 await self.lista_cmd()
                 set_cmd = True
             await self._handle_message(client, message)
+        @self.app.on_callback_query()
+        async def _handle_callback(client, callback_query):
+            await self._handle_callback_query(callback_query)
+    
+    async def _handle_callback_query(self, callback_query):
+        data = callback_query.data
+        user_id = callback_query.from_user.id
+        
+        if data.startswith("nyaa_"):
+            parts = data.split("_")
+            if len(parts) < 3:
+                return
+            
+            action = parts[1]
+            query_hash = parts[2]
+            extra = parts[3] if len(parts) > 3 else None
+            
+            if query_hash not in self.nyaa_cache:
+                await callback_query.answer("❌ Cache expirada", show_alert=True)
+                return
+            
+            cache_data = self.nyaa_cache[query_hash]
+            results = cache_data["results"]
+            total_results = len(results)
+            
+            cache_key = f"{user_id}_{query_hash}"
+            if cache_key not in self.current_positions:
+                self.current_positions[cache_key] = 0
+            current_pos = self.current_positions[cache_key]
+            
+            if action == "first":
+                new_pos = 0
+            elif action == "prev":
+                new_pos = max(0, current_pos - 1)
+            elif action == "next":
+                new_pos = min(total_results - 1, current_pos + 1)
+            elif action == "last":
+                new_pos = total_results - 1
+            elif action == "torrent":
+                result = results[current_pos]
+                torrent_link = result.get("torrent", "")
+                if torrent_link:
+                    await callback_query.message.reply(f"📎 **Torrent:**\n`{torrent_link}`")
+                    await callback_query.answer()
+                else:
+                    await callback_query.answer("❌ No hay enlace torrent disponible", show_alert=True)
+                return
+            elif action == "magnet":
+                result = results[current_pos]
+                magnet_link = result.get("magnet", "")
+                if magnet_link:
+                    await callback_query.message.reply(f"🧲 **Magnet:**\n`{magnet_link}`")
+                    await callback_query.answer()
+                else:
+                    await callback_query.answer("❌ No hay enlace magnet disponible", show_alert=True)
+                return
+            elif action == "download":
+                result = results[current_pos]
+                await self._start_torrent_download(callback_query.message, result, user_id)
+                await callback_query.answer("✅ Descarga iniciada")
+                return
+            else:
+                return
+            
+            self.current_positions[cache_key] = new_pos
+            await self._update_nyaa_message(callback_query.message, results, new_pos, query_hash)
+            await callback_query.answer()
     
     async def get_session(self):
         if not self.session:
@@ -552,6 +624,40 @@ class NekoTelegram:
             await self.app.download_media(rm, file_name=target_path, progress=progress_callback)
             download_completed = True
             await safe_call(progress_msg.edit_text, f"✅ Archivo guardado en `{target_path}`")
+            elif text.startswith("/nyaa ") or text.startswith("/nyaa18 "):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "Usa: `/nyaa término` o `/nyaa18 término`")
+                return
+            
+            search_term = parts[1]
+            is_nsfw = text.startswith("/nyaa18 ")
+            
+            await safe_call(message.reply_text, f"🔍 Buscando en {'Sukebei' if is_nsfw else 'Nyaa'}...")
+            
+            results = self.neko.nyaa_fap(search_term) if is_nsfw else self.neko.nyaa_fun(search_term)
+            
+            if not results:
+                await safe_call(message.reply_text, "❌ No se encontraron resultados")
+                return
+            
+            query_hash = hashlib.md5(f"{search_term}_{is_nsfw}".encode()).hexdigest()[:8]
+            self.nyaa_cache[query_hash] = {
+                "results": results,
+                "timestamp": time.time(),
+                "query": search_term,
+                "nsfw": is_nsfw
+            }
+            
+            cache_key = f"{message.from_user.id}_{query_hash}"
+            self.current_positions[cache_key] = 0
+            
+            await self._update_nyaa_message(message, results, 0, query_hash)
+            return
+        
+        elif text.startswith("/leech"):
+            await self._handle_leech_command(message)
+            return
     
     async def _process_manga_download(self, message, manga_id, mode, format_choice,
                                      start_chapter, start_volume, end_chapter, end_volume, user_id):
@@ -1078,6 +1184,164 @@ class NekoTelegram:
                 items_str = ", ".join(items)
                 tag_lines.append(f"**{category}:** {items_str}")
         return "\n".join(tag_lines)
+    
+    async def _update_nyaa_message(self, message, results, position, query_hash):
+        result = results[position]
+        total = len(results)
+        
+        text = f"**Resultado {position+1}/{total}**\n"
+        text += f"**Nombre:** `{result['name']}`\n"
+        text += f"**Tamaño:** {result['size']}\n"
+        text += f"**Fecha:** {result['date']}\n"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("◀️", callback_data=f"nyaa_first_{query_hash}"),
+                InlineKeyboardButton("⏪", callback_data=f"nyaa_prev_{query_hash}"),
+                InlineKeyboardButton(f"{position+1}/{total}", callback_data="nyaa_page"),
+                InlineKeyboardButton("⏩", callback_data=f"nyaa_next_{query_hash}"),
+                InlineKeyboardButton("▶️", callback_data=f"nyaa_last_{query_hash}")
+            ],
+            [
+                InlineKeyboardButton("📎 Torrent", callback_data=f"nyaa_torrent_{query_hash}"),
+                InlineKeyboardButton("🧲 Magnet", callback_data=f"nyaa_magnet_{query_hash}")
+            ],
+            [
+                InlineKeyboardButton("🔽 Descargar", callback_data=f"nyaa_download_{query_hash}")
+            ]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await message.edit_text(text, reply_markup=reply_markup)
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            await message.edit_text(text, reply_markup=reply_markup)
+    
+    
+    async def _handle_leech_command(self, message):
+        user_id = message.from_user.id
+        
+        if message.reply_to_message:
+            reply = message.reply_to_message
+            if reply.document and reply.document.file_size <= 5 * 1024 * 1024:
+                await self._process_torrent_file(message, reply.document)
+                return
+            elif reply.text:
+                await self._process_torrent_text(message, reply.text)
+                return
+            else:
+                await safe_call(message.reply_text, "❌ Responde a un mensaje con texto o archivo .torrent (<5MB)")
+                return
+        
+        parts = message.text.split(maxsplit=1)
+        if len(parts) > 1:
+            torrent_input = parts[1].strip()
+            await self._process_torrent_text(message, torrent_input)
+        else:
+            await safe_call(message.reply_text, "❌ Usa: `/leech magnet:...` o `/leech http://...torrent` o responde a un archivo")
+    
+    async def _process_torrent_file(self, message, document):
+        if not document.file_name.endswith('.torrent'):
+            await safe_call(message.reply_text, "❌ El archivo debe ser .torrent")
+            return
+        
+        progress_msg = await safe_call(message.reply_text, "📥 Descargando archivo torrent...")
+        
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".torrent")
+        temp_path = temp_file.name
+        temp_file.close()
+        
+        await self.app.download_media(document, file_name=temp_path)
+        
+        with open(temp_path, "rb") as f:
+            torrent_data = f.read()
+        
+        magnet = self._torrent_to_magnet(torrent_data)
+        os.remove(temp_path)
+        
+        await safe_call(progress_msg.edit_text, f"✅ Magnet generado:\n`{magnet[:100]}...`")
+        
+        await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id)
+    
+    async def _process_torrent_text(self, message, text):
+        text = text.strip()
+        
+        if text.startswith("magnet:?"):
+            magnet = text
+            await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id)
+            return
+        
+        elif text.endswith(".torrent"):
+            if text.startswith("http://") or text.startswith("https://"):
+                await safe_call(message.reply_text, "📥 Descargando torrent desde URL...")
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(text) as response:
+                            if response.status == 200:
+                                torrent_data = await response.read()
+                                magnet = self._torrent_to_magnet(torrent_data)
+                                await safe_call(message.reply_text, f"✅ Magnet generado:\n`{magnet[:100]}...`")
+                                await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id)
+                            else:
+                                await safe_call(message.reply_text, f"❌ Error al descargar: {response.status}")
+                except Exception as e:
+                    await safe_call(message.reply_text, f"❌ Error: {e}")
+            else:
+                if os.path.exists(text):
+                    with open(text, "rb") as f:
+                        torrent_data = f.read()
+                    magnet = self._torrent_to_magnet(torrent_data)
+                    await safe_call(message.reply_text, f"✅ Magnet generado:\n`{magnet[:100]}...`")
+                    await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id)
+                else:
+                    await safe_call(message.reply_text, "❌ Archivo no encontrado")
+        else:
+            await safe_call(message.reply_text, "❌ Enlace no válido. Debe ser magnet:? o .torrent")
+    
+    def _torrent_to_magnet(self, torrent_data: bytes) -> str:
+        try:
+            torrent_dict = bencodepy.decode(torrent_data)
+            info = torrent_dict[b'info']
+            
+            info_bencoded = bencodepy.encode(info)
+            infohash = hashlib.sha1(info_bencoded).hexdigest()
+            
+            trackers = []
+            if b'announce' in torrent_dict:
+                trackers.append(torrent_dict[b'announce'].decode())
+            if b'announce-list' in torrent_dict:
+                for tier in torrent_dict[b'announce-list']:
+                    for tr in tier:
+                        trackers.append(tr.decode())
+            
+            magnet = f"magnet:?xt=urn:btih:{infohash}"
+            if b'name' in info:
+                magnet += f"&dn={info[b'name'].decode()}"
+            for tr in trackers:
+                magnet += f"&tr={tr}"
+            
+            return magnet
+        except Exception as e:
+            raise Exception(f"Error convirtiendo torrent a magnet: {e}")
+    
+    async def _start_torrent_download(self, message, result, user_id):
+        magnet = result.get("magnet", "")
+        if not magnet:
+            await safe_call(message.reply_text, "❌ No hay enlace magnet disponible")
+            return
+        
+        download_path = os.path.join(os.getcwd(), "downloads", str(user_id))
+        os.makedirs(download_path, exist_ok=True)
+        
+        status_msg = await safe_call(message.reply_text, "⏳ Iniciando descarga torrent...")
+        
+        try:
+            await self.neko.download_magnet(magnet, download_path)
+            await safe_call(status_msg.edit_text, "✅ Descarga completada")
+        except Exception as e:
+            await safe_call(status_msg.edit_text, f"❌ Error en la descarga: {e}")
     
     def run(self):
         print("[INFO] Iniciando bot de Telegram...")

@@ -1,18 +1,70 @@
 import nekoapis.hapi
 import nekoapis.mangadex_api
+import nekoapis.nyaa_api
 import os
-import zipfile
-import requests
-import tempfile
-import shutil
-from PIL import Image
-from io import BytesIO
 import json
+import datetime
+import libtorrent as lt
+import asyncio
+import threading
 
 class Neko:
     def __init__(self):
         self.hapi = nekoapis.hapi.NakiBotAPI()
         self.mangadex = nekoapis.mangadex_api.MangaDexApi()
+        self.nyaa = nekoapis.nyaa_api.Nyaa_search()
+        self.active_downloads = {}
+        self.downloads_lock = threading.Lock()
+        
+    def nyaa_fun(self, query):
+        return self.nyaa.nyaafun(query)
+        
+    def nyaa_fap(self, query):
+        return self.nyaa.nyaafap(query)
+    
+    def log(self, msg):
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}")
+    
+    def start_session(self):
+        ses = lt.session()
+        ses.listen_on(6881, 6891)
+        ses.start_dht()
+        return ses
+    
+    def add_torrent(self, ses, magnet_uri, save_path):
+        params = {'save_path': save_path, 'storage_mode': lt.storage_mode_t.storage_mode_sparse}
+        handle = lt.add_magnet_uri(ses, magnet_uri, params)
+        handle.set_sequential_download(False)
+        return handle
+    
+    async def wait_for_metadata(self, handle):
+        self.log("Descargando metadata...")
+        while not handle.has_metadata():
+            await asyncio.sleep(1)
+        self.log("Metadata obtenida")
+    
+    async def monitor_download(self, handle):
+        state_str = ['queued', 'checking', 'downloading metadata', 'downloading', 'finished', 'seeding', 'allocating']
+        
+        while handle.status().state != lt.torrent_status.seeding:
+            s = handle.status()
+            self.log(f"{s.progress * 100:.2f}% | ↓ {s.download_rate / 1000:.1f} kB/s | estado: {state_str[s.state]}")
+            await asyncio.sleep(5)
+    
+    async def download_magnet(self, magnet_link, save_path="."):
+        try:
+            ses = self.start_session()
+            handle = self.add_torrent(ses, magnet_link, save_path)
+            
+            await self.wait_for_metadata(handle)
+            await self.monitor_download(handle)
+            
+            self.log(f"✅ {handle.name()} COMPLETADO")
+            return save_path
+            
+        except Exception as e:
+            self.log(f"❌ Error en download_magnet: {e}")
+            raise e
     
     def clean_name(self, name):
         if not name:
