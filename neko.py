@@ -133,8 +133,26 @@ class Neko:
                 if s.state == lt.torrent_status.downloading:
                     progress = s.progress * 100
                     download_rate = s.download_rate / 1000
-                    self.log(f"{progress:.2f}% | ↓ {download_rate:.1f} kB/s | estado: {state_str[s.state]}")
-                    yield f"⏳ Descargando... {progress:.2f}%\n↓ {download_rate:.1f} kB/s\n⏱️ {elapsed_str}"
+                    download_rate_mb = download_rate / 1024
+                    current_mb = s.total_done / (1024 * 1024)
+                    total_mb = s.total_wanted / (1024 * 1024)
+                    
+                    bar_length = 20
+                    filled_length = int(bar_length * progress / 100)
+                    bar = "█" * filled_length + "▒" * (bar_length - filled_length)
+                    
+                    torrent_name = handle.name() or "Descarga en curso"
+                    if len(torrent_name) > 50:
+                        torrent_name = torrent_name[:47] + "..."
+                    
+                    progress_msg = f"📥 Descargando: {torrent_name}\n"
+                    progress_msg += f"📊 Progreso: {progress:.2f}%\n"
+                    progress_msg += f"📉 [{bar}]\n"
+                    progress_msg += f"📦 Tamaño: {current_mb:.2f} MB / {total_mb:.2f} MB\n"
+                    progress_msg += f"🚀 Velocidad: {download_rate_mb:.1f} MB/s\n"
+                    progress_msg += f"⏱️ Tiempo: {elapsed_str}"
+                    
+                    yield progress_msg
                 
                 await asyncio.sleep(1)
             
@@ -147,12 +165,13 @@ class Neko:
                 torrent_name = "unnamed"
             
             final_path = os.path.join(save_path, self.clean_name(torrent_name))
+            yield f"✅ {handle.name()} COMPLETADO en {elapsed_str}"
             yield final_path
             
         except Exception as e:
             self.log(f"❌ Error en download_magnet: {e}")
             raise e
-    
+            
     def clean_name(self, name):
         if not name:
             return "unnamed"
