@@ -57,10 +57,34 @@ class Neko:
             handle = self.add_torrent(ses, magnet_link, save_path)
             
             await self.wait_for_metadata(handle)
-            await self.monitor_download(handle)
             
-            self.log(f"✅ {handle.name()} COMPLETADO")
-            return save_path
+            state_str = ['queued', 'checking', 'downloading metadata', 'downloading', 'finished', 'seeding', 'allocating']
+            start_time = datetime.datetime.now()
+            
+            while handle.status().state != lt.torrent_status.seeding:
+                s = handle.status()
+                elapsed = datetime.datetime.now() - start_time
+                elapsed_str = str(elapsed).split('.')[0]
+                
+                if s.state == lt.torrent_status.downloading:
+                    progress = s.progress * 100
+                    download_rate = s.download_rate / 1000
+                    self.log(f"{progress:.2f}% | ↓ {download_rate:.1f} kB/s | estado: {state_str[s.state]}")
+                    yield f"⏳ Descargando... {progress:.2f}%\n↓ {download_rate:.1f} kB/s\n⏱️ {elapsed_str}"
+                
+                await asyncio.sleep(1)
+            
+            elapsed = datetime.datetime.now() - start_time
+            elapsed_str = str(elapsed).split('.')[0]
+            self.log(f"✅ {handle.name()} COMPLETADO en {elapsed_str}")
+            
+            torrent_name = handle.name()
+            if not torrent_name:
+                torrent_name = "unnamed"
+            
+            final_path = os.path.join(save_path, self.clean_name(torrent_name))
+            yield f"✅ Descarga completada en {elapsed_str}"
+            return final_path
             
         except Exception as e:
             self.log(f"❌ Error en download_magnet: {e}")
