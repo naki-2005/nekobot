@@ -72,10 +72,15 @@ class NekoTelegram:
         user_id = callback_query.from_user.id
         
         if data.startswith("auto_"):
-            action = data.split("_")[1]
+            parts = data.split("_")
+            if len(parts) < 2:
+                return
+                
+            action = parts[1]
             if action == "info":
                 await callback_query.answer("Este boton solo es de información", show_alert=True)
                 return
+            
             if user_id not in user_auto_settings:
                 user_auto_settings[user_id] = {
                     "file_to_link": False,
@@ -83,6 +88,7 @@ class NekoTelegram:
                     "mangas": False,
                     "torrents": False
                 }
+            
             current_state = user_auto_settings[user_id].get(action, False)
             user_auto_settings[user_id][action] = not current_state
             await self._show_auto_menu(callback_query.message, user_id)
@@ -948,42 +954,61 @@ class NekoTelegram:
         msg = message
         msg.text = f"/leech {text}"
         await self._handle_message(self.app, msg)
-    
+
     async def _show_auto_menu(self, message, user_id):
-        if user_id not in user_auto_settings:
-            user_auto_settings[user_id] = {
-                "file_to_link": False,
-                "doujins": False,
-                "mangas": False,
-                "torrents": False
-            }
+        if message.chat.type != "private":
+            return
         
-        settings = user_auto_settings[user_id]
+        auto_settings = user_auto_settings.get(user_id, {
+            "file_to_link": False,
+            "doujins": False,
+            "mangas": False,
+            "torrents": False
+        })
         
-        text = "🤖 **Configuración Automática**\n\n"
-        text += "Activa/desactiva las acciones que se ejecutarán automáticamente:\n\n"
+        file_icon = "✅" if auto_settings["file_to_link"] else "❌"
+        doujin_icon = "✅" if auto_settings["doujins"] else "❌"
+        manga_icon = "✅" if auto_settings["mangas"] else "❌"
+        torrent_icon = "✅" if auto_settings["torrents"] else "❌"
         
-        file_to_link_icon = "✅" if settings["file_to_link"] else "❌"
-        doujins_icon = "✅" if settings["doujins"] else "❌"
-        mangas_icon = "✅" if settings["mangas"] else "❌"
-        torrents_icon = "✅" if settings["torrents"] else "❌"
-        
-        text += f"{file_to_link_icon} **Archivos a Vault**: Subir automáticamente archivos recibidos\n"
-        text += f"{doujins_icon} **Doujins**: Descargar automáticamente enlaces de doujins\n"
-        text += f"{mangas_icon} **Mangas**: Descargar automáticamente enlaces de MangaDex\n"
-        text += f"{torrents_icon} **Torrents**: Descargar automáticamente magnet/torrent\n"
+        text = "🤖 **Acciones Automáticas**\n\n"
+        text += "Activa o desactiva las funciones automáticas:\n\n"
+        text += f"{file_icon} **Archivos a Vault** - Sube archivos automáticamente\n"
+        text += f"{doujin_icon} **Doujins** - Detecta enlaces de doujins\n"
+        text += f"{manga_icon} **Mangas** - Detecta enlaces de manga\n"
+        text += f"{torrent_icon} **Torrents** - Detecta enlaces de torrent\n\n"
+        text += "💡 **Comandos disponibles:**\n"
+        text += "/nh - Descarga doujin de nhentai\n"
+        text += "/3h - Descarga doujin de 3hentai\n"
+        text += "/snh - Busca doujins en nhentai\n"
+        text += "/s3h - Busca doujins en 3hentai\n"
+        text += "/hito - Descarga de hitomi\n"
+        text += "/up - Subir archivo al vault\n"
+        text += "/setfile - Configurar formato\n"
+        text += "/mangasearch - Buscar manga\n"
+        text += "/mangafile - Formato de manga\n"
+        text += "/mangadlset - Modo de descarga\n"
+        text += "/mangalang - Idioma para manga\n"
+        text += "/mangadl - Descargar manga\n"
+        text += "/nyaa - Buscar en Nyaa\n"
+        text += "/nyaa18 - Buscar en Sukebei\n"
+        text += "/leech - Descargar torrent\n"
+        text += "/nextnames - Configurar nombres secuenciales\n"
+        text += "/auto - Mostrar este menú\n\n"
+        text += "ℹ️ Botones de información para explicaciones"
         
         keyboard = [
             [
-                InlineKeyboardButton("📁 Archivos", callback_data="auto_file_to_link"),
-                InlineKeyboardButton("📖 Doujins", callback_data="auto_doujins")
+                InlineKeyboardButton(f"{file_icon} Archivos", callback_data="auto_file_to_link"),
+                InlineKeyboardButton(f"{doujin_icon} Doujins", callback_data="auto_doujins")
             ],
             [
-                InlineKeyboardButton("📚 Mangas", callback_data="auto_mangas"),
-                InlineKeyboardButton("🧲 Torrents", callback_data="auto_torrents")
+                InlineKeyboardButton(f"{manga_icon} Mangas", callback_data="auto_mangas"),
+                InlineKeyboardButton(f"{torrent_icon} Torrents", callback_data="auto_torrents")
             ],
             [
-                InlineKeyboardButton("ℹ️ Info", callback_data="auto_info")
+                InlineKeyboardButton("📖 NH", callback_data="auto_info"),
+                InlineKeyboardButton("📖 3H", callback_data="auto_info")
             ]
         ]
         
@@ -992,7 +1017,7 @@ class NekoTelegram:
         try:
             await message.edit_text(text, reply_markup=reply_markup)
         except:
-            await safe_call(message.reply_text, text, reply_markup=reply_markup)    
+            await safe_call(message.reply_text, text, reply_markup=reply_markup)
             
     async def _process_manga_download(self, message, manga_id, mode, format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
