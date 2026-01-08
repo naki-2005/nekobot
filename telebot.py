@@ -128,7 +128,7 @@ class NekoTelegram:
             await self._update_nyaa_message(callback_query.message, results, new_pos, query_hash)
             await callback_query.answer()
             
-        async def _send_document_with_progress(self, chat_id, document_path, caption="", thumb=None):
+    async def _send_document_with_progress(self, chat_id, document_path, caption="", thumb=None):
         progress_msg = await safe_call(self.app.send_message, chat_id, "📤 Preparando envío...")
         start_time = time.time()
         upload_completed = False
