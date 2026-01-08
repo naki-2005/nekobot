@@ -72,7 +72,7 @@ class NekoTelegram:
         user_id = callback_query.from_user.id
         
         if data.startswith("auto_"):
-            action = data.split("_")[1]
+            action = data[5:]
             if action == "info":
                 await callback_query.answer("Este boton solo es de información", show_alert=True)
                 return
