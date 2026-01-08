@@ -7,6 +7,8 @@ import datetime
 import libtorrent as lt
 import asyncio
 import threading
+import subprocess
+import shutil
 
 class Neko:
     def __init__(self):
@@ -15,6 +17,68 @@ class Neko:
         self.nyaa = nekoapis.nyaa_api.Nyaa_search()
         self.active_downloads = {}
         self.downloads_lock = threading.Lock()
+    
+    def compress_to_7z(self, path, target_size=2000):
+        if not os.path.exists(path):
+            return []
+        
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        seven_zip = os.path.join(script_dir, "7zz")
+        
+        if not os.path.exists(seven_zip):
+            seven_zip = "7zz"
+        
+        if os.path.isdir(path):
+            base_name = os.path.basename(os.path.normpath(path))
+            parent_dir = os.path.dirname(os.path.abspath(path))
+            output_file = os.path.join(parent_dir, base_name + ".7z")
+        else:
+            base_name = os.path.splitext(os.path.basename(path))[0]
+            output_dir = os.path.dirname(os.path.abspath(path))
+            output_file = os.path.join(output_dir, base_name + ".7z")
+        
+        volume_option = f"-v{target_size}m"
+        
+        try:
+            if os.path.isdir(path):
+                cmd = [seven_zip, "a", output_file, path, "-mx0", volume_option]
+            else:
+                cmd = [seven_zip, "a", output_file, path, "-mx0", volume_option]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                return []
+            
+            parts = []
+            part_base = output_file
+            part_num = 1
+            
+            while True:
+                part_name = f"{part_base}.{part_num:03d}"
+                if not os.path.exists(part_name):
+                    part_name = f"{part_base}.{part_num:02d}"
+                    if not os.path.exists(part_name):
+                        part_name = f"{part_base}.{part_num}"
+                        if not os.path.exists(part_name):
+                            break
+                
+                parts.append(part_name)
+                part_num += 1
+            
+            if not parts:
+                if os.path.exists(output_file):
+                    parts.append(output_file)
+            
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+            
+            return parts
+            
+        except Exception:
+            return []
         
     def nyaa_fun(self, query):
         return self.nyaa.nyaafun(query)
