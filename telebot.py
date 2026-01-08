@@ -127,8 +127,17 @@ class NekoTelegram:
             self.current_positions[cache_key] = new_pos
             await self._update_nyaa_message(callback_query.message, results, new_pos, query_hash)
             await callback_query.answer()
-            
+
     async def _send_document_with_progress(self, chat_id, document_path, caption="", thumb=None):
+        file_size_mb = os.path.getsize(document_path) / (1024 * 1024)
+        
+        if file_size_mb > 2000:
+            parts = self.neko.compress_to_7z(document_path, 2000)
+            if parts:
+                for part in parts:
+                    await self._send_document_with_progress(chat_id, part, f"{caption} (Parte {os.path.basename(part).split('.')[-1]})")
+                return
+        
         progress_msg = await safe_call(self.app.send_message, chat_id, "📤 Preparando envío...")
         start_time = time.time()
         upload_completed = False
@@ -175,12 +184,28 @@ class NekoTelegram:
                            progress=upload_progress)
             upload_completed = True
             await upload_task
-            await safe_call(progress_msg.delete)
+            
+            try:
+                await safe_call(progress_msg.delete)
+            except:
+                pass
+            
+            try:
+                os.remove(document_path)
+            except:
+                pass
+            
         except Exception as e:
             upload_completed = True
             await upload_task
-            await safe_call(progress_msg.edit_text, f"❌ Error al enviar: {e}")
+            
+            try:
+                await safe_call(progress_msg.delete)
+            except:
+                pass
+            
             raise
+        
     async def get_session(self):
         if not self.session:
             self.session = aiohttp.ClientSession()
@@ -713,8 +738,7 @@ class NekoTelegram:
             await self._handle_leech_command(message)
             return
     
-    async def _process_manga_download(self, message, manga_id, mode, format_choice,
-                                     start_chapter, start_volume, end_chapter, end_volume, user_id):
+    async def _process_manga_download(self, message, manga_id, mode, format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
             user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
             
@@ -757,8 +781,7 @@ class NekoTelegram:
             print(f"Error en _process_manga_download: {e}")
             await safe_call(message.reply_text, f"❌ Error al procesar la descarga: {e}")
 
-    async def _download_manga_by_volumes(self, progress_msg, manga_id, volumes_order, volumes_data, covers_dict,
-                                        format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
+    async def _download_manga_by_volumes(self, progress_msg, manga_id, volumes_order, volumes_data, covers_dict, format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
             user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
             total_volumes = len(volumes_order)
@@ -860,21 +883,21 @@ class NekoTelegram:
                         temp_cover.close()
                         
                         if await self.async_download(cover_url, temp_cover_path):
-                            await self.app.send_document(
+                            await self._send_document_with_progress(
                                 progress_msg.chat.id,
                                 archive_path,
-                                thumb=temp_cover_path,
-                                caption=f"📚 {volume_name}"
+                                caption=f"📚 {volume_name}",
+                                thumb=temp_cover_path
                             )
                             os.remove(temp_cover_path)
                         else:
-                            await self.app.send_document(
+                            await self._send_document_with_progress(
                                 progress_msg.chat.id,
                                 archive_path,
                                 caption=f"📚 {volume_name}"
                             )
                     else:
-                        await self.app.send_document(
+                        await self._send_document_with_progress(
                             progress_msg.chat.id,
                             archive_path,
                             caption=f"📚 {volume_name}"
@@ -890,8 +913,7 @@ class NekoTelegram:
             print(f"Error en _download_manga_by_volumes: {e}")
             await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
     
-    async def _download_manga_by_chapters(self, progress_msg, manga_id, chapters, format_choice,
-                                         start_chapter, start_volume, end_chapter, end_volume, user_id):
+    async def _download_manga_by_chapters(self, progress_msg, manga_id, chapters, format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
             user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
             chapters.sort(key=lambda x: self._sort_key(x['chapter']))
@@ -952,7 +974,7 @@ class NekoTelegram:
                         os.remove(image_path)
                 
                 if archive_path and os.path.exists(archive_path):
-                    await self.app.send_document(
+                    await self._send_document_with_progress(
                         progress_msg.chat.id,
                         archive_path,
                         caption=f"📖 {chapter_name}"
@@ -1250,11 +1272,11 @@ class NekoTelegram:
         
         keyboard = [
             [
-                InlineKeyboardButton("◀️", callback_data=f"nyaa_first_{query_hash}"),
-                InlineKeyboardButton("⏪", callback_data=f"nyaa_prev_{query_hash}"),
+                InlineKeyboardButton("⏪", callback_data=f"nyaa_first_{query_hash}"),
+                InlineKeyboardButton("◀️", callback_data=f"nyaa_prev_{query_hash}"),
                 InlineKeyboardButton(f"{position+1}/{total}", callback_data="nyaa_page"),
-                InlineKeyboardButton("⏩", callback_data=f"nyaa_next_{query_hash}"),
-                InlineKeyboardButton("▶️", callback_data=f"nyaa_last_{query_hash}")
+                InlineKeyboardButton("▶️", callback_data=f"nyaa_next_{query_hash}"),
+                InlineKeyboardButton("⏩", callback_data=f"nyaa_last_{query_hash}")
             ],
             [
                 InlineKeyboardButton("📎 Torrent", callback_data=f"nyaa_torrent_{query_hash}"),
@@ -1283,11 +1305,11 @@ class NekoTelegram:
         
         keyboard = [
             [
-                InlineKeyboardButton("◀️", callback_data=f"nyaa_first_{query_hash}"),
-                InlineKeyboardButton("⏪", callback_data=f"nyaa_prev_{query_hash}"),
+                InlineKeyboardButton("⏪", callback_data=f"nyaa_first_{query_hash}"),
+                InlineKeyboardButton("◀️", callback_data=f"nyaa_prev_{query_hash}"),
                 InlineKeyboardButton(f"{position+1}/{total}", callback_data="nyaa_page"),
-                InlineKeyboardButton("⏩", callback_data=f"nyaa_next_{query_hash}"),
-                InlineKeyboardButton("▶️", callback_data=f"nyaa_last_{query_hash}")
+                InlineKeyboardButton("▶️", callback_data=f"nyaa_next_{query_hash}"),
+                InlineKeyboardButton("⏩", callback_data=f"nyaa_last_{query_hash}")
             ],
             [
                 InlineKeyboardButton("📎 Torrent", callback_data=f"nyaa_torrent_{query_hash}"),
@@ -1333,8 +1355,6 @@ class NekoTelegram:
             await safe_call(message.reply_text, "❌ El archivo debe ser .torrent")
             return
         
-        progress_msg = await safe_call(message.reply_text, "📥 Descargando archivo torrent...")
-        
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".torrent")
         temp_path = temp_file.name
         temp_file.close()
@@ -1346,8 +1366,6 @@ class NekoTelegram:
         
         magnet = self._torrent_to_magnet(torrent_data)
         os.remove(temp_path)
-        
-        await safe_call(progress_msg.edit_text, f"✅ Magnet generado:\n`{magnet[:100]}...`")
         
         await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id)
     
@@ -1361,30 +1379,27 @@ class NekoTelegram:
         
         elif text.endswith(".torrent"):
             if text.startswith("http://") or text.startswith("https://"):
-                await safe_call(message.reply_text, "📥 Descargando torrent desde URL...")
                 try:
                     async with aiohttp.ClientSession() as session:
                         async with session.get(text) as response:
                             if response.status == 200:
                                 torrent_data = await response.read()
                                 magnet = self._torrent_to_magnet(torrent_data)
-                                await safe_call(message.reply_text, f"✅ Magnet generado:\n`{magnet[:100]}...`")
                                 await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id)
                             else:
-                                await safe_call(message.reply_text, f"❌ Error al descargar: {response.status}")
+                                await safe_call(message.reply_text, f"❌ Error al descargar")
                 except Exception as e:
-                    await safe_call(message.reply_text, f"❌ Error: {e}")
+                    await safe_call(message.reply_text, f"❌ Error")
             else:
                 if os.path.exists(text):
                     with open(text, "rb") as f:
                         torrent_data = f.read()
                     magnet = self._torrent_to_magnet(torrent_data)
-                    await safe_call(message.reply_text, f"✅ Magnet generado:\n`{magnet[:100]}...`")
                     await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id)
                 else:
                     await safe_call(message.reply_text, "❌ Archivo no encontrado")
         else:
-            await safe_call(message.reply_text, "❌ Enlace no válido. Debe ser magnet:? o .torrent")
+            await safe_call(message.reply_text, "❌ Enlace no válido")
     
     def _torrent_to_magnet(self, torrent_data: bytes) -> str:
         try:
@@ -1415,34 +1430,78 @@ class NekoTelegram:
     async def _start_torrent_download(self, message, result, user_id):
         magnet = result.get("magnet", "")
         if not magnet:
-            await safe_call(message.reply_text, "❌ No hay enlace magnet disponible")
             return
         
         download_path = os.path.join(os.getcwd(), "vault", str(user_id))
         os.makedirs(download_path, exist_ok=True)
         
         status_msg = await safe_call(message.reply_text, "⏳ Iniciando descarga torrent...")
-        last_update_time = time.time()
         
         try:
             download_generator = self.neko.download_magnet(magnet, download_path)
             final_path = None
+            last_progress = ""
+            torrent_name = ""
             
             async for progress_text in download_generator:
-                current_time = time.time()
-                if current_time - last_update_time >= 10:
-                    await safe_call(status_msg.edit_text, progress_text)
-                    last_update_time = current_time
-                
-                if not progress_text.startswith("⏳"):
-                    final_path = progress_text
+                if progress_text.startswith("⏳"):
+                    if "COMPLETADO" in progress_text:
+                        final_path = progress_text.split(" ")[1]
+                    else:
+                        lines = progress_text.split("\n")
+                        if len(lines) >= 2:
+                            progress_percent = float(lines[0].split(" ")[1].replace("%", ""))
+                            speed_kb = float(lines[1].split(" ")[1])
+                            speed_mb = speed_kb / 1024
+                            time_str = lines[2].split(" ")[1] if len(lines) > 2 else "00:00:00"
+                            
+                            if not torrent_name and hasattr(self.neko, 'active_downloads'):
+                                for handle in self.neko.active_downloads.values():
+                                    if handle.status().state == lt.torrent_status.downloading:
+                                        torrent_name = handle.name() or ""
+                                        break
+                            
+                            if not torrent_name:
+                                torrent_name = "Descarga en curso"
+                            
+                            if len(torrent_name) > 50:
+                                torrent_name = torrent_name[:47] + "..."
+                            
+                            bar_length = 20
+                            filled_length = int(bar_length * progress_percent / 100)
+                            bar = "█" * filled_length + "▒" * (bar_length - filled_length)
+                            
+                            if hasattr(self.neko, 'active_downloads'):
+                                for handle in self.neko.active_downloads.values():
+                                    if handle.status().state == lt.torrent_status.downloading:
+                                        s = handle.status()
+                                        current_mb = s.total_done / (1024 * 1024)
+                                        total_mb = s.total_wanted / (1024 * 1024)
+                                        break
+                                else:
+                                    current_mb = 0
+                                    total_mb = 0
+                            else:
+                                current_mb = 0
+                                total_mb = 0
+                            
+                            progress_msg = f"📥 Descargando: {torrent_name}\n"
+                            progress_msg += f"📊 Progreso: {progress_percent:.2f}%\n"
+                            progress_msg += f"📉 [{bar}]\n"
+                            progress_msg += f"📦 Tamaño: {current_mb:.2f} MB / {total_mb:.2f} MB\n"
+                            progress_msg += f"🚀 Velocidad: {speed_mb:.1f} MB/s\n"
+                            progress_msg += f"⏱️ Tiempo: {time_str}"
+                            
+                            if progress_msg != last_progress:
+                                await safe_call(status_msg.edit_text, progress_msg)
+                                last_progress = progress_msg
             
             if final_path and os.path.exists(final_path):
                 if os.path.isfile(final_path):
                     await self._send_document_with_progress(
                         message.chat.id,
                         final_path,
-                        caption=f"✅ Descarga completada: {os.path.basename(final_path)}"
+                        caption=f"✅ {os.path.basename(final_path)}"
                     )
                 elif os.path.isdir(final_path):
                     for root, dirs, files in os.walk(final_path):
@@ -1452,16 +1511,23 @@ class NekoTelegram:
                                 await self._send_document_with_progress(
                                     message.chat.id,
                                     file_path,
-                                    caption=f"📁 {os.path.basename(file_path)}"
+                                    caption=f"✅ {os.path.basename(file_path)}"
                                 )
                                 await asyncio.sleep(0.5)
                             except Exception as e:
                                 print(f"Error enviando archivo {file_path}: {e}")
             
-            await safe_call(status_msg.edit_text, f"✅ Descarga completada y enviada")
+            try:
+                await status_msg.delete()
+            except:
+                pass
             
         except Exception as e:
-            await safe_call(status_msg.edit_text, f"❌ Error en la descarga: {e}")
+            try:
+                await status_msg.delete()
+            except:
+                pass
+            await safe_call(message.reply_text, f"❌ Error en la descarga")
             
     def run(self):
         print("[INFO] Iniciando bot de Telegram...")
