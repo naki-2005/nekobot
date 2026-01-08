@@ -624,7 +624,7 @@ class NekoTelegram:
             await self.app.download_media(rm, file_name=target_path, progress=progress_callback)
             download_completed = True
             await safe_call(progress_msg.edit_text, f"✅ Archivo guardado en `{target_path}`")
-            elif text.startswith("/nyaa ") or text.startswith("/nyaa18 "):
+        elif text.startswith("/nyaa ") or text.startswith("/nyaa18 "):
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
                 await safe_call(message.reply_text, "Usa: `/nyaa término` o `/nyaa18 término`")
