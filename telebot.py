@@ -1371,6 +1371,8 @@ class NekoTelegram:
                     progress_msg, manga_id, chapters, format_choice,
                     start_chapter, start_volume, end_chapter, end_volume, user_id
                 )
+                
+            await safe_call(progress_msg.edit_text, "✅ Descarga de manga completada")
             
         except Exception as e:
             print(f"Error en _process_manga_download: {e}")
@@ -1502,8 +1504,6 @@ class NekoTelegram:
                 
                 await asyncio.sleep(0.2)
             
-            await safe_call(progress_msg.edit_text, "✅ Descarga de volúmenes completada")
-            
         except Exception as e:
             print(f"Error en _download_manga_by_volumes: {e}")
             await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
@@ -1577,8 +1577,6 @@ class NekoTelegram:
                     os.remove(archive_path)
                 
                 await asyncio.sleep(0.2)
-            
-            await safe_call(progress_msg.edit_text, "✅ Descarga de capítulos completada")
             
         except Exception as e:
             print(f"Error en _download_manga_by_chapters: {e}")
