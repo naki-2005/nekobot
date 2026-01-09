@@ -355,7 +355,7 @@ class NekoTelegram:
                             
                             if await self.async_download(cover_url, temp_cover_path):
                                 await self._send_document_with_progress(
-                                    progress_msg.chat.id,
+                                    user_id,
                                     archive_path,
                                     caption=f"📚 {volume_name}",
                                     thumb=temp_cover_path
@@ -363,13 +363,13 @@ class NekoTelegram:
                                 os.remove(temp_cover_path)
                             else:
                                 await self._send_document_with_progress(
-                                    progress_msg.chat.id,
+                                    user_id,
                                     archive_path,
                                     caption=f"📚 {volume_name}"
                                 )
                         else:
                             await self._send_document_with_progress(
-                                progress_msg.chat.id,
+                                user_id,
                                 archive_path,
                                 caption=f"📚 {volume_name}"
                             )
@@ -382,7 +382,7 @@ class NekoTelegram:
                     print(f"Error enviando archivo: {e}")
                     try:
                         await self._send_document_with_progress(
-                            progress_msg.chat.id,
+                            user_id,
                             archive_path,
                             caption=f"📚 {volume_name}"
                         )
@@ -465,7 +465,7 @@ class NekoTelegram:
                 try:
                     if archive_path and os.path.exists(archive_path):
                         await self._send_document_with_progress(
-                            progress_msg.chat.id,
+                            user_id,
                             archive_path,
                             caption=f"📖 {chapter_name}"
                         )
@@ -477,7 +477,7 @@ class NekoTelegram:
                     print(f"Error enviando archivo: {e}")
                     try:
                         await self._send_document_with_progress(
-                            progress_msg.chat.id,
+                            user_id,
                             archive_path,
                             caption=f"📖 {chapter_name}"
                         )
@@ -542,7 +542,7 @@ class NekoTelegram:
                 cbz_path = self.neko.create_cbz(nombre, [os.path.join(temp_dir, f) for f in sorted(os.listdir(temp_dir))])
                 if cbz_path and os.path.exists(cbz_path):
                     await self._send_document_with_progress(
-                        message.chat.id,
+                        user_id,
                         cbz_path,
                         caption=nombre
                     )
@@ -563,7 +563,7 @@ class NekoTelegram:
                 pdf_path = self.neko.create_pdf(nombre, [os.path.join(temp_dir, f) for f in sorted(os.listdir(temp_dir))])
                 if pdf_path and os.path.exists(pdf_path):
                     await self._send_document_with_progress(
-                        message.chat.id,
+                        user_id,
                         pdf_path,
                         caption=nombre
                     )
