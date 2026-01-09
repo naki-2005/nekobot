@@ -150,6 +150,13 @@ class NekoTelegram:
             await callback_query.answer()
 
     async def _send_document_with_progress(self, chat_id, document_path, caption="", thumb=None):
+        print(f"[DEBUG] Intentando enviar: {document_path}, tamaño: {os.path.getsize(document_path) if os.path.exists(document_path) else 'NO EXISTE'}")
+        
+        if not os.path.exists(document_path):
+            print(f"[ERROR] Archivo no existe: {document_path}")
+            await safe_call(self.app.send_message, chat_id, f"❌ Error: Archivo no encontrado: {os.path.basename(document_path)}")
+            return
+        
         file_size_mb = os.path.getsize(document_path) / (1024 * 1024)
         
         if file_size_mb > 2000:
@@ -197,12 +204,15 @@ class NekoTelegram:
         upload_task = asyncio.create_task(update_upload_progress())
         
         try:
-            await safe_call(self.app.send_document, 
-                           chat_id=chat_id, 
-                           document=document_path, 
-                           caption=caption,
-                           thumb=thumb,
-                           progress=upload_progress)
+            await safe_call(
+                self.app.send_document,
+                chat_id=chat_id,
+                document=document_path,
+                caption=caption,
+                thumb=thumb,
+                progress=upload_progress
+            )
+            
             upload_completed = True
             await upload_task
             
@@ -225,7 +235,336 @@ class NekoTelegram:
             except:
                 pass
             
-            raise
+            print(f"❌ Error enviando documento: {e}")
+            try:
+                await safe_call(
+                    self.app.send_document,
+                    chat_id=chat_id,
+                    document=document_path,
+                    caption=caption,
+                    thumb=thumb
+                )
+                if os.path.exists(document_path):
+                    os.remove(document_path)
+            except Exception as e2:
+                print(f"❌ Error en reintento: {e2}")
+                raise
+    
+    async def _download_manga_by_volumes(self, progress_msg, manga_id, volumes_order, volumes_data, covers_dict, format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
+        try:
+            user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
+            total_volumes = len(volumes_order)
+            
+            for volume_index, volume in enumerate(volumes_order, 1):
+                
+                if start_volume and volume != 'sin_volumen':
+                    if self._sort_key(volume) < self._sort_key(str(start_volume)):
+                        continue
+                
+                if end_volume and volume != 'sin_volumen':
+                    if self._sort_key(volume) > self._sort_key(str(end_volume)):
+                        break
+                
+                volume_chapters = volumes_data[volume]
+                volume_chapters.sort(key=lambda x: self._sort_key(x['chapter']))
+                
+                all_volume_images = []
+                chapter_range = []
+                total_images_downloaded = 0
+                total_images_expected = 0
+                
+                for chapter in volume_chapters:
+                    chapter_num = chapter['chapter']
+                    
+                    if start_chapter and self._sort_key(chapter_num) < self._sort_key(str(start_chapter)):
+                        continue
+                    
+                    if end_chapter and self._sort_key(chapter_num) > self._sort_key(str(end_chapter)):
+                        break
+                    
+                    chapter_range.append(float(chapter_num) if chapter_num.replace('.', '', 1).isdigit() else chapter_num)
+                    
+                    image_links = self.neko.download_chapter(chapter['id'])
+                    if image_links:
+                        total_images_expected += len(image_links)
+                
+                if total_images_expected == 0:
+                    continue
+                
+                await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume} ({volume_index}/{total_volumes}) en {user_lang.upper()}... (0/{total_images_expected} Imágenes descargadas)")
+                
+                for chapter in volume_chapters:
+                    chapter_num = chapter['chapter']
+                    
+                    if start_chapter and self._sort_key(chapter_num) < self._sort_key(str(start_chapter)):
+                        continue
+                    
+                    if end_chapter and self._sort_key(chapter_num) > self._sort_key(str(end_chapter)):
+                        break
+                    
+                    image_links = self.neko.download_chapter(chapter['id'])
+                    if image_links:
+                        downloaded_images = await self.download_images_concurrently(image_links, max_concurrent=10)
+                        all_volume_images.extend(downloaded_images)
+                        total_images_downloaded += len(downloaded_images)
+                        
+                        await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume} ({volume_index}/{total_volumes}) en {user_lang.upper()}... ({total_images_downloaded}/{total_images_expected} Imágenes descargadas)")
+                
+                if not all_volume_images:
+                    continue
+                
+                if chapter_range:
+                    min_chap = min(chapter_range)
+                    max_chap = max(chapter_range)
+                    
+                    if volume == 'sin_volumen':
+                        volume_name = f"Capítulos {min_chap}-{max_chap}"
+                        
+                        known_volumes = [v for v in volumes_order if v != 'sin_volumen']
+                        if known_volumes:
+                            last_known_vol = max([float(v) for v in known_volumes if v.replace('.', '', 1).isdigit()], default=1)
+                            next_vol_num = int(last_known_vol) + 1
+                            volume_name = f"Volumen {next_vol_num} ({min_chap}-{max_chap} Incomplete)"
+                    else:
+                        volume_name = f"Volumen {volume}"
+                        
+                        if chapter_range:
+                            if len(chapter_range) > 1:
+                                volume_name = f"Volumen {volume} ({min_chap}-{max_chap})"
+                            else:
+                                volume_name = f"Volumen {volume} ({min_chap})"
+                
+                if format_choice == "cbz":
+                    archive_path = self.neko.create_cbz(volume_name, all_volume_images)
+                else:
+                    archive_path = self.neko.create_pdf(volume_name, all_volume_images)
+                
+                for image_path in all_volume_images:
+                    if os.path.exists(image_path):
+                        os.remove(image_path)
+                
+                try:
+                    if archive_path and os.path.exists(archive_path):
+                        cover_url = covers_dict.get(volume, "")
+                        
+                        if cover_url:
+                            temp_cover = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                            temp_cover_path = temp_cover.name
+                            temp_cover.close()
+                            
+                            if await self.async_download(cover_url, temp_cover_path):
+                                await self._send_document_with_progress(
+                                    progress_msg.chat.id,
+                                    archive_path,
+                                    caption=f"📚 {volume_name}",
+                                    thumb=temp_cover_path
+                                )
+                                os.remove(temp_cover_path)
+                            else:
+                                await self._send_document_with_progress(
+                                    progress_msg.chat.id,
+                                    archive_path,
+                                    caption=f"📚 {volume_name}"
+                                )
+                        else:
+                            await self._send_document_with_progress(
+                                progress_msg.chat.id,
+                                archive_path,
+                                caption=f"📚 {volume_name}"
+                            )
+                        
+                        if os.path.exists(archive_path):
+                            os.remove(archive_path)
+                except Exception as e:
+                    print(f"Error enviando archivo: {e}")
+                    try:
+                        await self._send_document_with_progress(
+                            progress_msg.chat.id,
+                            archive_path,
+                            caption=f"📚 {volume_name}"
+                        )
+                        if os.path.exists(archive_path):
+                            os.remove(archive_path)
+                    except Exception as e2:
+                        print(f"Error en reintento: {e2}")
+                        await safe_call(progress_msg.reply_text, f"❌ Error enviando archivo: {e2}")
+                
+                await asyncio.sleep(0.2)
+            
+            await safe_call(progress_msg.edit_text, "✅ Descarga de volúmenes completada")
+            
+        except Exception as e:
+            print(f"Error en _download_manga_by_volumes: {e}")
+            await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
+    
+    async def _download_manga_by_chapters(self, progress_msg, manga_id, chapters, format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
+        try:
+            user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
+            chapters.sort(key=lambda x: self._sort_key(x['chapter']))
+            
+            filtered_chapters = []
+            
+            for chapter in chapters:
+                chapter_num = chapter['chapter']
+                volume = chapter['volume'] if chapter['volume'] else 'sin_volumen'
+                
+                if start_chapter and self._sort_key(chapter_num) < self._sort_key(str(start_chapter)):
+                    continue
+                
+                if end_chapter and self._sort_key(chapter_num) > self._sort_key(str(end_chapter)):
+                    break
+                
+                if start_volume and volume != 'sin_volumen':
+                    if self._sort_key(volume) < self._sort_key(str(start_volume)):
+                        continue
+                
+                if end_volume and volume != 'sin_volumen':
+                    if self._sort_key(volume) > self._sort_key(str(end_volume)):
+                        break
+                
+                filtered_chapters.append(chapter)
+            
+            total_chapters = len(filtered_chapters)
+            
+            for idx, chapter in enumerate(filtered_chapters, 1):
+                chapter_num = chapter['chapter']
+                chapter_id = chapter['id']
+                
+                image_links = self.neko.download_chapter(chapter_id)
+                
+                if not image_links:
+                    continue
+                
+                total_images = len(image_links)
+                
+                await safe_call(progress_msg.edit_text, f"📖 Descargando capítulo {chapter_num} ({idx}/{total_chapters}) en {user_lang.upper()}... (0/{total_images} Imágenes descargadas)")
+                
+                downloaded_images = await self.download_images_concurrently(image_links, max_concurrent=10)
+                
+                if not downloaded_images:
+                    continue
+                
+                await safe_call(progress_msg.edit_text, f"📖 Descargando capítulo {chapter_num} ({idx}/{total_chapters}) en {user_lang.upper()}... ({len(downloaded_images)}/{total_images} Imágenes descargadas)")
+                
+                chapter_name = f"Capítulo {chapter_num}"
+                
+                if format_choice == "cbz":
+                    archive_path = self.neko.create_cbz(chapter_name, downloaded_images)
+                else:
+                    archive_path = self.neko.create_pdf(chapter_name, downloaded_images)
+                
+                for image_path in downloaded_images:
+                    if os.path.exists(image_path):
+                        os.remove(image_path)
+                
+                try:
+                    if archive_path and os.path.exists(archive_path):
+                        await self._send_document_with_progress(
+                            progress_msg.chat.id,
+                            archive_path,
+                            caption=f"📖 {chapter_name}"
+                        )
+                        if os.path.exists(archive_path):
+                            os.remove(archive_path)
+                except Exception as e:
+                    print(f"Error enviando archivo: {e}")
+                    try:
+                        await self._send_document_with_progress(
+                            progress_msg.chat.id,
+                            archive_path,
+                            caption=f"📖 {chapter_name}"
+                        )
+                        if os.path.exists(archive_path):
+                            os.remove(archive_path)
+                    except Exception as e2:
+                        print(f"Error en reintento: {e2}")
+                        await safe_call(progress_msg.reply_text, f"❌ Error enviando archivo: {e2}")
+                
+                await asyncio.sleep(0.2)
+            
+            await safe_call(progress_msg.edit_text, "✅ Descarga de capítulos completada")
+            
+        except Exception as e:
+            print(f"Error en _download_manga_by_chapters: {e}")
+            await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
+    
+    async def _process_gallery_json_with_range(self, message, result, code, format_choice, start_page, end_page, user_id):
+        if "error" in result:
+            await safe_call(message.reply_text, f"Error: `{result['error']}`")
+            return
+        
+        nombre = result.get("title", "Sin titulo")
+        all_images = result.get("image_links", [])
+        tags = result.get("tags", {})
+        
+        if not all_images:
+            await safe_call(message.reply_text, "No hay imagenes")
+            return
+        
+        total_images = len(all_images)
+        
+        if end_page is None:
+            end_page = total_images
+        
+        start_page = max(1, start_page)
+        end_page = min(total_images, end_page)
+        
+        if start_page > end_page:
+            start_page, end_page = end_page, start_page
+        
+        images = all_images[start_page-1:end_page]
+        
+        caption = f"**{nombre}**\nCódigo: `{code}`\nRango: {start_page}-{end_page} de {total_images}\n\n{self._format_tags(tags)}"
+        
+        if images:
+            await safe_call(message.reply_photo, images[0], caption=caption)
+        
+        if len(images) > 1:
+            if format_choice == "cbz":
+                temp_dir = "temp_cbz"
+                os.makedirs(temp_dir, exist_ok=True)
+                
+                download_tasks = []
+                for i, img_url in enumerate(images):
+                    img_path = os.path.join(temp_dir, f"{i+start_page:04d}.jpg")
+                    download_tasks.append(self.async_download(img_url, img_path))
+                
+                await asyncio.gather(*download_tasks)
+                
+                cbz_path = self.neko.create_cbz(nombre, [os.path.join(temp_dir, f) for f in sorted(os.listdir(temp_dir))])
+                if cbz_path and os.path.exists(cbz_path):
+                    await self._send_document_with_progress(
+                        message.chat.id,
+                        cbz_path,
+                        caption=nombre
+                    )
+                    if os.path.exists(cbz_path):
+                        os.remove(cbz_path)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            elif format_choice == "pdf":
+                temp_dir = "temp_pdf"
+                os.makedirs(temp_dir, exist_ok=True)
+                
+                download_tasks = []
+                for i, img_url in enumerate(images):
+                    img_path = os.path.join(temp_dir, f"{i+start_page:04d}.jpg")
+                    download_tasks.append(self.async_download(img_url, img_path))
+                
+                await asyncio.gather(*download_tasks)
+                
+                pdf_path = self.neko.create_pdf(nombre, [os.path.join(temp_dir, f) for f in sorted(os.listdir(temp_dir))])
+                if pdf_path and os.path.exists(pdf_path):
+                    await self._send_document_with_progress(
+                        message.chat.id,
+                        pdf_path,
+                        caption=nombre
+                    )
+                    if os.path.exists(pdf_path):
+                        os.remove(pdf_path)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            elif format_choice == "raw":
+                await self._send_photos_in_batches(message, images[1:], user_id=user_id)
+    
         
     async def get_session(self):
         if not self.session:
