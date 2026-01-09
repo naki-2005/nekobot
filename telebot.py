@@ -254,6 +254,7 @@ class NekoTelegram:
         try:
             user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
             total_volumes = len(volumes_order)
+            files_sent = 0
             
             for volume_index, volume in enumerate(volumes_order, 1):
                 
@@ -375,6 +376,8 @@ class NekoTelegram:
                         
                         if os.path.exists(archive_path):
                             os.remove(archive_path)
+                        
+                        files_sent += 1
                 except Exception as e:
                     print(f"Error enviando archivo: {e}")
                     try:
@@ -385,17 +388,18 @@ class NekoTelegram:
                         )
                         if os.path.exists(archive_path):
                             os.remove(archive_path)
+                        files_sent += 1
                     except Exception as e2:
                         print(f"Error en reintento: {e2}")
-                        await safe_call(progress_msg.reply_text, f"❌ Error enviando archivo: {e2}")
                 
                 await asyncio.sleep(0.2)
             
-            await safe_call(progress_msg.edit_text, "✅ Descarga de volúmenes completada")
+            return files_sent
             
         except Exception as e:
             print(f"Error en _download_manga_by_volumes: {e}")
             await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
+            return 0
     
     async def _download_manga_by_chapters(self, progress_msg, manga_id, chapters, format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
@@ -425,6 +429,7 @@ class NekoTelegram:
                 filtered_chapters.append(chapter)
             
             total_chapters = len(filtered_chapters)
+            files_sent = 0
             
             for idx, chapter in enumerate(filtered_chapters, 1):
                 chapter_num = chapter['chapter']
@@ -466,6 +471,8 @@ class NekoTelegram:
                         )
                         if os.path.exists(archive_path):
                             os.remove(archive_path)
+                        
+                        files_sent += 1
                 except Exception as e:
                     print(f"Error enviando archivo: {e}")
                     try:
@@ -476,17 +483,18 @@ class NekoTelegram:
                         )
                         if os.path.exists(archive_path):
                             os.remove(archive_path)
+                        files_sent += 1
                     except Exception as e2:
                         print(f"Error en reintento: {e2}")
-                        await safe_call(progress_msg.reply_text, f"❌ Error enviando archivo: {e2}")
                 
                 await asyncio.sleep(0.2)
             
-            await safe_call(progress_msg.edit_text, "✅ Descarga de capítulos completada")
+            return files_sent
             
         except Exception as e:
             print(f"Error en _download_manga_by_chapters: {e}")
             await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
+            return 0
     
     async def _process_gallery_json_with_range(self, message, result, code, format_choice, start_page, end_page, user_id):
         if "error" in result:
@@ -1361,18 +1369,23 @@ class NekoTelegram:
             
             volumes_order = sorted(volumes_data.keys(), key=lambda x: self._sort_key(x))
             
+            files_sent = 0
+            
             if mode == "vol":
-                await self._download_manga_by_volumes(
+                files_sent = await self._download_manga_by_volumes(
                     progress_msg, manga_id, volumes_order, volumes_data, covers_dict,
                     format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id
                 )
             else:
-                await self._download_manga_by_chapters(
+                files_sent = await self._download_manga_by_chapters(
                     progress_msg, manga_id, chapters, format_choice,
                     start_chapter, start_volume, end_chapter, end_volume, user_id
                 )
                 
-            await safe_call(progress_msg.edit_text, "✅ Descarga de manga completada")
+            if files_sent > 0:
+                await safe_call(progress_msg.edit_text, f"✅ Descarga de manga completada. Se enviaron {files_sent} archivos.")
+            else:
+                await safe_call(progress_msg.edit_text, "❌ No se pudo descargar ningún archivo. Verifica los capítulos/volúmenes disponibles.")
             
         except Exception as e:
             print(f"Error en _process_manga_download: {e}")
@@ -1382,6 +1395,7 @@ class NekoTelegram:
         try:
             user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
             total_volumes = len(volumes_order)
+            files_sent = 0
             
             for volume_index, volume in enumerate(volumes_order, 1):
                 
@@ -1501,12 +1515,16 @@ class NekoTelegram:
                         )
                     
                     os.remove(archive_path)
+                    files_sent += 1
                 
                 await asyncio.sleep(0.2)
+            
+            return files_sent
             
         except Exception as e:
             print(f"Error en _download_manga_by_volumes: {e}")
             await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
+            return 0
     
     async def _download_manga_by_chapters(self, progress_msg, manga_id, chapters, format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
@@ -1536,6 +1554,7 @@ class NekoTelegram:
                 filtered_chapters.append(chapter)
             
             total_chapters = len(filtered_chapters)
+            files_sent = 0
             
             for idx, chapter in enumerate(filtered_chapters, 1):
                 chapter_num = chapter['chapter']
@@ -1575,12 +1594,16 @@ class NekoTelegram:
                         caption=f"📖 {chapter_name}"
                     )
                     os.remove(archive_path)
+                    files_sent += 1
                 
                 await asyncio.sleep(0.2)
+            
+            return files_sent
             
         except Exception as e:
             print(f"Error en _download_manga_by_chapters: {e}")
             await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
+            return 0
     
     def _sort_key(self, val):
         if not val or val == 'sin_volumen':
