@@ -1,6 +1,6 @@
 import os
 import json
-from flask import Flask, request, redirect, url_for, send_file, render_template_string
+from flask import Flask, request, redirect, url_for, send_file, render_template_string, Response
 from werkzeug.utils import secure_filename
 from neko import Neko
 
@@ -11,59 +11,73 @@ os.makedirs(BASE_DIR, exist_ok=True)
 neko_instance = Neko()
 
 def format_size(size_bytes):
-    """Convierte bytes a KB, MB o GB según corresponda"""
     if size_bytes < 1024:
         return f"{size_bytes} bytes"
-    
     size_kb = size_bytes / 1024
     if size_kb < 1024:
         return f"{size_kb:.2f} KB"
-    
     size_mb = size_kb / 1024
     if size_mb < 1024:
         return f"{size_mb:.2f} MB"
-    
     size_gb = size_mb / 1024
     return f"{size_gb:.2f} GB"
 
 @app.route("/", defaults={"req_path": ""})
 @app.route("/<path:req_path>")
 def dir_listing(req_path):
+    preview_mode = request.args.get('preview', 'false') == 'true'
+    
     abs_path = os.path.join(BASE_DIR, req_path)
     if not os.path.exists(abs_path):
         return "Ruta no encontrada", 404
     if os.path.isfile(abs_path):
-        return send_file(abs_path, as_attachment=True)
+        return send_file(abs_path, as_attachment=not preview_mode)
+    
     files = sorted(os.listdir(abs_path))
     file_links = []
     for f in files:
         full_path = os.path.join(req_path, f)
         abs_f = os.path.join(abs_path, f)
-        size = os.path.getsize(abs_f)
+        size = os.path.getsize(abs_f) if os.path.isfile(abs_f) else 0
         formatted_size = format_size(size)
+        
         if os.path.isdir(abs_f):
             file_links.append(
-                f'<li><a href="/{full_path}">{f}/</a> '
+                f'<li><a href="/{full_path}{"?preview=true" if preview_mode else ""}">{f}/</a> '
                 f'<form style="display:inline;" method="post" action="/delete">'
                 f'<input type="hidden" name="path" value="{full_path}">'
                 f'<button type="submit">Borrar</button></form> ({formatted_size})</li>'
             )
         else:
+            if preview_mode:
+                link = f'<a href="/{full_path}?preview=true" target="_blank">{f}</a>'
+            else:
+                link = f'<a href="/{full_path}">{f}</a>'
+            
             file_links.append(
-                f'<li><a href="/{full_path}">{f}</a> '
+                f'<li>{link} '
                 f'<form style="display:inline;" method="post" action="/delete">'
                 f'<input type="hidden" name="path" value="{full_path}">'
                 f'<button type="submit">Borrar</button></form> ({formatted_size})</li>'
             )
+    
+    toggle_button = f'''
+    <form method="get" style="margin-bottom: 20px;">
+        <input type="hidden" name="preview" value="{str(not preview_mode).lower()}">
+        <button type="submit">{"🔗 Modo Descarga" if preview_mode else "👁️ Modo Preview"}</button>
+    </form>
+    '''
+    
     upload_form = '''
     <form method="post" action="/upload" enctype="multipart/form-data">
         <input type="file" name="file" multiple>
         <button type="submit">Subir</button>
     </form>
     '''
+    
     return render_template_string(
-        "<h1>Contenido de {{path}}</h1><ul>{{links|safe}}</ul>{{upload|safe}}",
-        path=req_path or "/", links="".join(file_links), upload=upload_form
+        "<h1>Contenido de {{path}}</h1>{{toggle|safe}}<ul>{{links|safe}}</ul>{{upload|safe}}",
+        path=req_path or "/", links="".join(file_links), upload=upload_form, toggle=toggle_button
     )
 
 @app.route("/delete", methods=["POST"])
