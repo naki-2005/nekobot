@@ -56,7 +56,7 @@ class NekoTelegram:
         self.current_positions = {}
         self.user_downloads = {}
         
-        @self.app.on_message(filters.text & filters.private)
+        @self.app.on_message(filters.private)
         async def _handle_message(client: Client, message: Message):
             global set_cmd
             if not set_cmd:
