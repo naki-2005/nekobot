@@ -9,6 +9,11 @@ import asyncio
 import threading
 import subprocess
 import shutil
+import tempfile
+import zipfile
+import requests
+from io import BytesIO
+from PIL import Image
 
 class Neko:
     def __init__(self):
