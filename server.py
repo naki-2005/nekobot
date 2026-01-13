@@ -33,7 +33,7 @@ def dir_listing(req_path):
     if os.path.isfile(abs_path):
         return send_file(abs_path, as_attachment=not preview_mode)
     
-    files = sorted(os.listdir(abs_path))
+    files = neko_instance.sort_directory(abs_path)
     file_links = []
     for f in files:
         full_path = os.path.join(req_path, f)
