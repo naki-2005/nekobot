@@ -454,6 +454,10 @@ class Neko:
                     result_json.append(volume_data)
             
             return json.dumps(result_json, indent=2, ensure_ascii=False)
+            
+        except Exception as e:
+            print(f"Error en download_manga: {e}")
+            return json.dumps([])
 
     def sort_directory(self, path):
         if not os.path.exists(path) or not os.path.isdir(path):
@@ -474,7 +478,3 @@ class Neko:
         files.sort()
         
         return folders + files
-            
-        except Exception as e:
-            print(f"Error en download_manga: {e}")
-            return json.dumps([])
