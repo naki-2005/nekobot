@@ -1213,6 +1213,7 @@ class NekoTelegram:
                 chapter_num = chapter['chapter']
                 chapter_id = chapter['id']
                 volume = chapter['volume'] if chapter['volume'] else 'sin_volumen'
+                cover_url = chapter.get('cover')
                 
                 image_links = self.neko.download_chapter(chapter_id)
                 
@@ -1240,18 +1241,39 @@ class NekoTelegram:
                 
                 await safe_call(progress_msg.edit_text, f"📖 Descargando capítulo {chapter_num} ({idx}/{total_chapters}) en {user_lang.upper()}... ({len(downloaded_images)}/{total_images} Imágenes descargadas)")
                 
+                thumbnail_path = None
+                if cover_url:
+                    try:
+                        thumbnail_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                        thumbnail_path = thumbnail_file.name
+                        thumbnail_file.close()
+                        
+                        if await self.async_download(cover_url, thumbnail_path):
+                            img = Image.open(thumbnail_path)
+                            img.thumbnail((320, 320))
+                            img.save(thumbnail_path, "JPEG")
+                    except Exception as e:
+                        print(f"Error descargando miniatura: {e}")
+                        thumbnail_path = None
+                
                 if format_choice == "cbz" and chapter_images:
                     cbz_path = await self._create_cbz_from_images(f"Capítulo {chapter_num}", chapter_images, user_id)
                     if cbz_path:
-                        await self._send_document_with_progress(progress_msg.chat.id, cbz_path, f"📖 Capítulo {chapter_num}")
+                        await self._send_document_with_progress(progress_msg.chat.id, cbz_path, f"📖 Capítulo {chapter_num}", thumb=thumbnail_path)
                 
                 elif format_choice == "pdf" and chapter_images:
                     pdf_path = await self._create_pdf_from_images(f"Capítulo {chapter_num}", chapter_images, user_id)
                     if pdf_path:
-                        await self._send_document_with_progress(progress_msg.chat.id, pdf_path, f"📖 Capítulo {chapter_num}")
+                        await self._send_document_with_progress(progress_msg.chat.id, pdf_path, f"📖 Capítulo {chapter_num}", thumb=thumbnail_path)
                 
                 else:
                     await safe_call(progress_msg.edit_text, f"✅ Capítulo {chapter_num} guardado en vault: {chapter_dir}")
+                
+                if thumbnail_path and os.path.exists(thumbnail_path):
+                    try:
+                        os.remove(thumbnail_path)
+                    except:
+                        pass
                 
                 await asyncio.sleep(0.2)
             
@@ -1260,7 +1282,7 @@ class NekoTelegram:
         except Exception as e:
             print(f"Error en _download_manga_by_chapters: {e}")
             await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
-    
+
     async def _create_cbz_from_images(self, nombre, image_paths, user_id):
         try:
             safe_nombre = self.neko.clean_name(nombre)
@@ -1290,7 +1312,7 @@ class NekoTelegram:
         except Exception as e:
             print(f"Error creando CBZ: {e}")
             return None
-    
+
     async def _create_pdf_from_images(self, nombre, image_paths, user_id):
         try:
             safe_nombre = self.neko.clean_name(nombre)
@@ -1322,7 +1344,7 @@ class NekoTelegram:
         except Exception as e:
             print(f"Error creando PDF: {e}")
             return None
-    
+
     def _sort_key(self, val):
         if not val or val == 'sin_volumen':
             return (float('inf'), '')
