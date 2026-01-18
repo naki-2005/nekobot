@@ -336,8 +336,75 @@ class NekoTelegram:
         text = message.text.strip()
         user_id = message.from_user.id
 
+        if text.startswith("/listfiles"):
+            vault_dir = os.path.join(os.getcwd(), "vault")
+            if not os.path.exists(vault_dir):
+                await safe_call(message.reply_text, "❌ La carpeta vault no existe")
+                return
+            
+            items = self.neko.sort_directory(vault_dir)
+            
+            if not items:
+                await safe_call(message.reply_text, "❌ La carpeta vault está vacía")
+                return
+            
+            files_list = []
+            for idx, item in enumerate(items, 1):
+                item_path = os.path.join(vault_dir, item)
+                if os.path.isfile(item_path):
+                    size = os.path.getsize(item_path)
+                    size_mb = size / (1024 * 1024)
+                    files_list.append(f"{idx}. {item} ({size_mb:.2f} MB)")
+                else:
+                    files_list.append(f"{idx}. 📁 {item}/")
+            
+            message_text = "📁 **Archivos en vault:**\n\n" + "\n".join(files_list[:50])
+            
+            if len(files_list) > 50:
+                message_text += f"\n\n... y {len(files_list) - 50} archivos más"
+            
+            await safe_call(message.reply_text, message_text)
+            return
+        
+        elif text.startswith("/sendfile "):
+            parts = text.split()
+            if len(parts) != 2:
+                await safe_call(message.reply_text, "Usa: `/sendfile número`")
+                return
+            
+            try:
+                file_num = int(parts[1])
+            except ValueError:
+                await safe_call(message.reply_text, "❌ El número debe ser un entero válido")
+                return
+            
+            vault_dir = os.path.join(os.getcwd(), "vault")
+            if not os.path.exists(vault_dir):
+                await safe_call(message.reply_text, "❌ La carpeta vault no existe")
+                return
+            
+            items = self.neko.sort_directory(vault_dir)
+            
+            if file_num < 1 or file_num > len(items):
+                await safe_call(message.reply_text, f"❌ Número fuera de rango (1-{len(items)})")
+                return
+            
+            selected_item = items[file_num - 1]
+            item_path = os.path.join(vault_dir, selected_item)
+            
+            if os.path.isfile(item_path):
+                await self._send_document_with_progress(
+                    message.chat.id,
+                    item_path,
+                    caption=f"📄 {selected_item}"
+                )
+            elif os.path.isdir(item_path):
+                await safe_call(message.reply_text, f"📁 {selected_item} es una carpeta. Usa /listfiles para ver su contenido.")
+            else:
+                await safe_call(message.reply_text, "❌ Archivo no encontrado")
+            return
 
-        if text.startswith("/reset "):
+        elif text.startswith("/reset "):
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
                 await safe_call(message.reply_text, "Usa: `/reset ServiceID BearerToken`")
