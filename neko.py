@@ -516,3 +516,21 @@ class Neko:
             if 'download_path' in locals() and os.path.exists(download_path):
                 shutil.rmtree(download_path, ignore_errors=True)
             raise e
+
+    def reset_render_service(self, render_service_id, render_bearer):
+        try:
+            url = f"https://api.render.com/v1/services/{render_service_id}/restart"
+            
+            headers = {
+                "accept": "application/json",
+                "authorization": f"Bearer {render_bearer}"
+            }
+            
+            response = requests.post(url, headers=headers)
+            print(response.text)
+            
+            return response.status_code == 200
+            
+        except Exception as e:
+            print(f"Error en reset_render_service: {e}")
+            return False
