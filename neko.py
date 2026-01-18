@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import zipfile
 import requests
+import uuid
 from io import BytesIO
 from PIL import Image
 
@@ -483,3 +484,35 @@ class Neko:
         files.sort()
         
         return folders + files
+    
+    def mega_download(self, mega_link):
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            megadl_path = os.path.join(script_dir, "megadl")
+            
+            if not os.path.exists(megadl_path):
+                raise FileNotFoundError("megadl not found in script directory")
+            
+            if not os.access(megadl_path, os.X_OK):
+                os.chmod(megadl_path, 0o755)
+            
+            folder_name = str(uuid.uuid4())
+            current_dir = os.getcwd()
+            download_path = os.path.join(current_dir, folder_name)
+            os.makedirs(download_path, exist_ok=True)
+            
+            cmd = [megadl_path, mega_link, "--path", download_path]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+            
+            if result.returncode != 0:
+                if os.path.exists(download_path) and not os.listdir(download_path):
+                    os.rmdir(download_path)
+                raise Exception(f"megadl failed: {result.stderr}")
+            
+            return download_path
+            
+        except Exception as e:
+            if 'download_path' in locals() and os.path.exists(download_path):
+                shutil.rmtree(download_path, ignore_errors=True)
+            raise e
