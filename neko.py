@@ -498,7 +498,7 @@ class Neko:
             
             folder_name = str(uuid.uuid4())
             current_dir = os.getcwd()
-            download_path = os.path.join(current_dir, folder_name)
+            download_path = os.path.join(current_dir, "vault", folder_name)
             os.makedirs(download_path, exist_ok=True)
             
             cmd = [megadl_path, mega_link, "--path", download_path]
