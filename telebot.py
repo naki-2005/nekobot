@@ -303,6 +303,7 @@ class NekoTelegram:
         self.flask_thread.start()
         print("[INFO] Servidor Flask iniciado en puerto 5000.")
         
+
     async def lista_cmd(self):
         await self.app.set_bot_commands([
             BotCommand("nh", "Descarga un doujin de nhentai"),
@@ -318,10 +319,14 @@ class NekoTelegram:
             BotCommand("mangalang", "Configurar idioma para manga (en/es/ko/etc)"),
             BotCommand("mangadl", "Descargar manga por ID"),
             BotCommand("auto", "Configurar acciones automáticas"),
-            BotCommand("nextnames", "Configurar nombres para próximos archivos")
+            BotCommand("nextnames", "Configurar nombres para próximos archivos"),
+            BotCommand("nyaa", "Buscar en Nyaa"),
+            BotCommand("nyaa18", "Buscar en Sukebei (Nyaa 18+)"),
+            BotCommand("leech", "Descargar torrent/magnet"),
+            BotCommand("mega", "Descargar archivo de MEGA")
         ])
         print("Comandos configurados en el bot")
-    
+        
     async def _handle_message(self, client: Client, message: Message):
         if not message.text:
             await self._handle_auto_actions(message)
@@ -517,6 +522,17 @@ class NekoTelegram:
                 message, manga_id, user_mode, user_format,
                 start_chapter, start_volume, end_chapter, end_volume, user_id
             )
+            return
+
+
+        elif text.startswith("/mega "):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "Usa: `/mega mega_link`")
+                return
+            
+            mega_link = parts[1].strip()
+            await self._process_mega_download(message, mega_link)
             return
         
         elif text.startswith("/nh ") or text.startswith("/3h "):
@@ -1848,7 +1864,79 @@ class NekoTelegram:
             except:
                 pass
             await safe_call(message.reply_text, f"❌ Error en la descarga") 
+    
+    async def _process_mega_download(self, message, mega_link):
+        try:
+            status_msg = await safe_call(message.reply_text, "⏳ Iniciando descarga de MEGA...")
             
+            download_path = self.neko.mega_download(mega_link)
+            
+            await safe_call(status_msg.edit_text, "✅ Descarga de MEGA completada. Procesando archivos...")
+            
+            if not os.path.exists(download_path):
+                await safe_call(status_msg.edit_text, "❌ No se encontró la carpeta de descarga")
+                return
+            
+            items = os.listdir(download_path)
+            
+            if len(items) == 0:
+                await safe_call(status_msg.edit_text, "❌ La carpeta está vacía")
+                shutil.rmtree(download_path, ignore_errors=True)
+                return
+            
+            elif len(items) == 1:
+                single_item = os.path.join(download_path, items[0])
+                
+                if os.path.isfile(single_item):
+                    await self._send_document_with_progress(
+                        message.chat.id,
+                        single_item,
+                        caption=f"✅ {os.path.basename(single_item)}"
+                    )
+                
+                elif os.path.isdir(single_item):
+                    parts = self.neko.compress_to_7z(single_item, 2000)
+                    if parts:
+                        for part in parts:
+                            await self._send_document_with_progress(
+                                message.chat.id,
+                                part,
+                                f"✅ {os.path.basename(part)}"
+                            )
+                    else:
+                        await safe_call(status_msg.edit_text, "❌ Error al comprimir carpeta")
+                
+                else:
+                    await safe_call(status_msg.edit_text, "❌ Tipo de archivo no soportado")
+            
+            else:
+                parts = self.neko.compress_to_7z(download_path, 2000)
+                
+                if parts:
+                    for part in parts:
+                        await self._send_document_with_progress(
+                            message.chat.id,
+                            part,
+                            f"✅ {os.path.basename(part)}"
+                        )
+                else:
+                    await safe_call(status_msg.edit_text, "❌ Error al comprimir archivos")
+            
+            try:
+                await status_msg.delete()
+            except:
+                pass
+            
+            if os.path.exists(download_path):
+                shutil.rmtree(download_path, ignore_errors=True)
+        
+        except Exception as e:
+            try:
+                await status_msg.delete()
+            except:
+                pass
+            await safe_call(message.reply_text, f"❌ Error en la descarga de MEGA: {str(e)}")
+    
     def run(self):
         print("[INFO] Iniciando bot de Telegram...")
         self.app.run()
