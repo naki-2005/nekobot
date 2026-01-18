@@ -323,10 +323,11 @@ class NekoTelegram:
             BotCommand("nyaa", "Buscar en Nyaa"),
             BotCommand("nyaa18", "Buscar en Sukebei (Nyaa 18+)"),
             BotCommand("leech", "Descargar torrent/magnet"),
-            BotCommand("mega", "Descargar archivo de MEGA")
+            BotCommand("mega", "Descargar archivo de MEGA"),
+            BotCommand("reset", "Reiniciar servicio Render (ServiceID BearerToken)")
         ])
         print("Comandos configurados en el bot")
-        
+
     async def _handle_message(self, client: Client, message: Message):
         if not message.text:
             await self._handle_auto_actions(message)
@@ -334,8 +335,21 @@ class NekoTelegram:
         
         text = message.text.strip()
         user_id = message.from_user.id
+
+
+        if text.startswith("/reset "):
+            parts = text.split(maxsplit=2)
+            if len(parts) < 3:
+                await safe_call(message.reply_text, "Usa: `/reset ServiceID BearerToken`")
+                return
+            
+            service_id = parts[1].strip()
+            bearer_token = parts[2].strip()
+            
+            await self._process_reset_render(message, service_id, bearer_token)
+            return
         
-        if text.startswith("/setfile "):
+        elif text.startswith("/setfile "):
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
                 current = user_settings.get(user_id, "raw")
@@ -1936,6 +1950,21 @@ class NekoTelegram:
             except:
                 pass
             await safe_call(message.reply_text, f"❌ Error en la descarga de MEGA: {str(e)}")
+            
+    async def _process_reset_render(self, message, service_id, bearer_token):
+        try:
+            status_msg = await safe_call(message.reply_text, "🔄 Reiniciando servicio Render...")
+            
+            success = self.neko.reset_render_service(service_id, bearer_token)
+            
+            if success:
+                await safe_call(status_msg.edit_text, "✅ Servicio Render reiniciado exitosamente")
+            else:
+                await safe_call(status_msg.edit_text, "❌ Error al reiniciar el servicio Render")
+        
+        except Exception as e:
+            await safe_call(message.reply_text, f"❌ Error: {str(e)}")
+            
     
     def run(self):
         print("[INFO] Iniciando bot de Telegram...")
