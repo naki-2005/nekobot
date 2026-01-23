@@ -127,7 +127,7 @@ class NekoTelegram:
                 result = results[current_pos]
                 torrent_link = result.get("torrent", "")
                 if torrent_link:
-                    await callback_query.message.reply(f"📎 **Torrent:**\n`{torrent_link}`")
+                    await callback_query.message.reply(f"`{torrent_link}`")
                     await callback_query.answer()
                 else:
                     await callback_query.answer("❌ No hay enlace torrent disponible", show_alert=True)
@@ -136,7 +136,7 @@ class NekoTelegram:
                 result = results[current_pos]
                 magnet_link = result.get("magnet", "")
                 if magnet_link:
-                    await callback_query.message.reply(f"🧲 **Magnet:**\n`{magnet_link}`")
+                    await callback_query.message.reply(f"`{magnet_link}`")
                     await callback_query.answer()
                 else:
                     await callback_query.answer("❌ No hay enlace magnet disponible", show_alert=True)
@@ -181,6 +181,11 @@ class NekoTelegram:
             while not upload_completed:
                 if total_bytes > 0:
                     elapsed = int(time.time() - start_time)
+                    if elapsed == 0:
+                        speed = 0
+                    else:
+                        speed = (current_bytes / elapsed) / (1024 * 1024)
+                    
                     formatted_time = format_time(elapsed)
                     progress_ratio = current_bytes / total_bytes if total_bytes else 0
                     bar_length = 20
@@ -190,16 +195,17 @@ class NekoTelegram:
                     total_mb = total_bytes / (1024 * 1024)
                     
                     if time.time() - last_update >= 10:
-                        await safe_call(
-                            progress_msg.edit_text,
+                        progress_text = (
                             f"📤 Enviando archivo...\n"
                             f"🕒 Tiempo: {formatted_time}\n"
                             f"📊 Progreso: {current_mb:.2f} MB / {total_mb:.2f} MB\n"
                             f"📉 [{bar}] {progress_ratio*100:.1f}%\n"
+                            f"🚀 Velocidad: {speed:.1f} MB/s\n"
                             f"📄 Archivo: {os.path.basename(document_path)}"
                         )
+                        await safe_call(progress_msg.edit_text, progress_text)
                         last_update = time.time()
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1)
         
         def upload_progress(current, total):
             nonlocal current_bytes
@@ -253,7 +259,7 @@ class NekoTelegram:
             except Exception as e2:
                 print(f"❌ Error en reintento: {e2}")
                 raise
-    
+                
     async def get_session(self):
         if not self.session:
             self.session = aiohttp.ClientSession()
@@ -1901,12 +1907,15 @@ class NekoTelegram:
             download_generator = self.neko.download_magnet(magnet, download_path)
             final_path = None
             last_progress = ""
+            last_update_time = time.time()
             
             async for progress_text in download_generator:
                 if progress_text.startswith("📥"):
-                    if progress_text != last_progress:
+                    current_time = time.time()
+                    if progress_text != last_progress and current_time - last_update_time >= 10:
                         await safe_call(status_msg.edit_text, progress_text)
                         last_progress = progress_text
+                        last_update_time = current_time
                 elif progress_text.startswith("✅") and "COMPLETADO" in progress_text:
                     continue
                 else:
@@ -1944,7 +1953,7 @@ class NekoTelegram:
                 await status_msg.delete()
             except:
                 pass
-            await safe_call(message.reply_text, f"❌ Error en la descarga") 
+            await safe_call(message.reply_text, f"❌ Error en la descarga")
     
     async def _process_mega_download(self, message, mega_link):
         try:
