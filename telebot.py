@@ -1173,205 +1173,112 @@ class NekoTelegram:
         except Exception as e:
             print(f"Error en _process_manga_download: {e}")
             await safe_call(message.reply_text, f"❌ Error al procesar la descarga: {e}")
-
-    async def _download_manga_by_volumes(self, progress_msg, manga_id, feed_data, covers_dict, format_choice, quality_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
+    async def _download_manga_by_volumes(self, progress_msg, manga_id, volumes_order, volumes_data, covers_dict, format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
-            total_volumes = len(feed_data)
+            user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
+            total_volumes = len(volumes_order)
             
             vault_dir = os.path.join(os.getcwd(), "vault", "manga", manga_id)
             os.makedirs(vault_dir, exist_ok=True)
             
-            for volume_index, volume_data in enumerate(feed_data, 1):
-                volume = volume_data.get('volume')
-                cover_url = None
+            for volume_index, volume in enumerate(volumes_order, 1):
                 
-                if volume is not None:
-                    volume_str = str(volume)
-                    if volume_str in covers_dict:
-                        cover_url = covers_dict[volume_str]
-                
-                if start_volume and volume is not None:
-                    try:
-                        start_vol_float = float(str(start_volume))
-                        vol_float = float(volume_str)
-                        if vol_float < start_vol_float:
-                            continue
-                    except:
+                if start_volume and volume != 'sin_volumen':
+                    if self._sort_key(volume) < self._sort_key(str(start_volume)):
                         continue
                 
-                if end_volume and volume is not None:
-                    try:
-                        end_vol_float = float(str(end_volume))
-                        vol_float = float(volume_str)
-                        if vol_float > end_vol_float:
-                            break
-                    except:
-                        continue
+                if end_volume and volume != 'sin_volumen':
+                    if self._sort_key(volume) > self._sort_key(str(end_volume)):
+                        break
                 
-                chapters = volume_data.get('chapters', [])
-                
-                if not chapters:
-                    continue
-                
-                chapters.sort(key=lambda x: self._sort_key(x.get('chapter', '0')))
+                volume_chapters = volumes_data[volume]
+                volume_chapters.sort(key=lambda x: self._sort_key(x['chapter']))
                 
                 all_volume_images = []
                 chapter_range = []
                 total_images_downloaded = 0
                 total_images_expected = 0
                 
-                for chapter in chapters:
-                    chapter_num = chapter.get('chapter')
+                for chapter in volume_chapters:
+                    chapter_num = chapter['chapter']
                     
                     if start_chapter:
-                        try:
-                            chap_float = self._sort_key(str(chapter_num))
-                            start_chap_float = self._sort_key(str(start_chapter))
-                            if chap_float < start_chap_float:
-                                continue
-                        except:
+                        if self._sort_key(chapter_num) < self._sort_key(str(start_chapter)):
                             continue
                     
                     if end_chapter:
-                        try:
-                            chap_float = self._sort_key(str(chapter_num))
-                            end_chap_float = self._sort_key(str(end_chapter))
-                            if chap_float > end_chap_float:
-                                break
-                        except:
-                            continue
+                        if self._sort_key(chapter_num) > self._sort_key(str(end_chapter)):
+                            break
                     
-                    chapter_range.append(float(chapter_num) if chapter_num and chapter_num.replace('.', '', 1).isdigit() else chapter_num)
+                    chapter_range.append(float(chapter_num) if chapter_num.replace('.', '', 1).isdigit() else chapter_num)
                     
-                    chapter_id = chapter.get('chapter_id')
-                    if chapter_id:
-                        try:
-                            dl_json = self.mangadex.dl(chapter_id)
-                            if dl_json:
-                                dl_data = json.loads(dl_json)
-                                if 'error' not in dl_data:
-                                    image_urls = dl_data.get(quality_choice, [])
-                                    total_images_expected += len(image_urls)
-                        except:
-                            continue
+                    image_links = self.neko.download_chapter(chapter['id'])
+                    if image_links:
+                        total_images_expected += len(image_links)
                 
                 if total_images_expected == 0:
                     continue
                 
-                await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume if volume else 'Sin volumen'} ({volume_index}/{total_volumes})... (0/{total_images_expected} Imágenes descargadas)")
+                await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume} ({volume_index}/{total_volumes}) en {user_lang.upper()}... (0/{total_images_expected} Imágenes descargadas)")
                 
-                for chapter in chapters:
-                    chapter_num = chapter.get('chapter')
+                for chapter in volume_chapters:
+                    chapter_num = chapter['chapter']
                     
                     if start_chapter:
-                        try:
-                            chap_float = self._sort_key(str(chapter_num))
-                            start_chap_float = self._sort_key(str(start_chapter))
-                            if chap_float < start_chap_float:
-                                continue
-                        except:
+                        if self._sort_key(chapter_num) < self._sort_key(str(start_chapter)):
                             continue
                     
                     if end_chapter:
-                        try:
-                            chap_float = self._sort_key(str(chapter_num))
-                            end_chap_float = self._sort_key(str(end_chapter))
-                            if chap_float > end_chap_float:
-                                break
-                        except:
-                        continue
+                        if self._sort_key(chapter_num) > self._sort_key(str(end_chapter)):
+                            break
                     
-                    chapter_id = chapter.get('chapter_id')
-                    if not chapter_id:
-                        continue
-                    
-                    try:
-                        dl_json = self.mangadex.dl(chapter_id)
-                        if not dl_json:
-                            continue
+                    image_links = self.neko.download_chapter(chapter['id'])
+                    if image_links:
+                        downloaded_images = await self.download_images_concurrently(image_links, max_concurrent=10)
                         
-                        dl_data = json.loads(dl_json)
-                        if 'error' in dl_data:
-                            continue
-                        
-                        image_urls = dl_data.get(quality_choice, [])
-                        
-                        if not image_urls:
-                            continue
-                        
-                        downloaded_images = await self.download_images_concurrently(image_urls, max_concurrent=10)
-                        
-                        volume_dir = os.path.join(vault_dir, f"vol_{volume if volume else 'sin_volumen'}")
+                        volume_dir = os.path.join(vault_dir, f"vol_{volume}")
                         os.makedirs(volume_dir, exist_ok=True)
                         
                         for img_idx, img_path in enumerate(downloaded_images):
-                            chapter_safe = str(chapter_num).replace('.', '_')
-                            new_name = f"vol_{volume if volume else '0'}_chap_{chapter_safe}_img_{img_idx+1:03d}.jpg"
+                            new_name = f"vol_{volume}_chap_{chapter_num}_img_{img_idx+1:03d}.jpg"
                             new_path = os.path.join(volume_dir, new_name)
                             shutil.move(img_path, new_path)
                             all_volume_images.append(new_path)
                         
                         total_images_downloaded += len(downloaded_images)
                         
-                        await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume if volume else 'Sin volumen'} ({volume_index}/{total_volumes})... ({total_images_downloaded}/{total_images_expected} Imágenes descargadas)")
-                        
-                    except Exception as e:
-                        print(f"Error procesando capítulo {chapter_num}: {e}")
-                        continue
+                        await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume} ({volume_index}/{total_volumes}) en {user_lang.upper()}... ({total_images_downloaded}/{total_images_expected} Imágenes descargadas)")
                 
                 if not all_volume_images:
                     continue
                 
                 if chapter_range:
-                    try:
-                        min_chap = min(chapter_range)
-                        max_chap = max(chapter_range)
+                    min_chap = min(chapter_range)
+                    max_chap = max(chapter_range)
+                    
+                    if volume == 'sin_volumen':
+                        volume_name = f"Capítulos {min_chap}-{max_chap}"
+                    else:
+                        volume_name = f"Volumen {volume}"
                         
-                        if volume is None:
-                            volume_name = f"Capítulos {min_chap}-{max_chap}"
-                        else:
-                            volume_name = f"Volumen {volume}"
-                            
+                        if chapter_range:
                             if len(chapter_range) > 1:
                                 volume_name = f"Volumen {volume} ({min_chap}-{max_chap})"
                             else:
                                 volume_name = f"Volumen {volume} ({min_chap})"
-                    except:
-                        volume_name = f"Volumen {volume if volume else 'Sin volumen'}"
-                
-                thumbnail_path = None
-                if cover_url:
-                    try:
-                        thumbnail_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-                        thumbnail_path = thumbnail_file.name
-                        thumbnail_file.close()
-                        
-                        if await self.async_download(cover_url, thumbnail_path):
-                            img = Image.open(thumbnail_path)
-                            img.thumbnail((320, 320))
-                            img.save(thumbnail_path, "JPEG")
-                    except Exception as e:
-                        print(f"Error descargando miniatura: {e}")
-                        thumbnail_path = None
                 
                 if format_choice == "cbz" and all_volume_images:
                     cbz_path = await self._create_cbz_from_images(volume_name, all_volume_images, user_id)
                     if cbz_path:
-                        await self._send_document_with_progress(progress_msg.chat.id, cbz_path, f"📚 {volume_name}", thumb=thumbnail_path)
+                        await self._send_document_with_progress(progress_msg.chat.id, cbz_path, f"📚 {volume_name}")
                 
                 elif format_choice == "pdf" and all_volume_images:
                     pdf_path = await self._create_pdf_from_images(volume_name, all_volume_images, user_id)
                     if pdf_path:
-                        await self._send_document_with_progress(progress_msg.chat.id, pdf_path, f"📚 {volume_name}", thumb=thumbnail_path)
+                        await self._send_document_with_progress(progress_msg.chat.id, pdf_path, f"📚 {volume_name}")
                 
                 else:
-                    await safe_call(progress_msg.edit_text, f"✅ Volumen {volume if volume else 'Sin volumen'} guardado en vault: {vault_dir}")
-                
-                if thumbnail_path and os.path.exists(thumbnail_path):
-                    try:
-                        os.remove(thumbnail_path)
-                    except:
-                        pass
+                    await safe_call(progress_msg.edit_text, f"✅ Volumen {volume} guardado en vault: {vault_dir}")
                 
                 await asyncio.sleep(0.2)
             
@@ -1380,7 +1287,7 @@ class NekoTelegram:
         except Exception as e:
             print(f"Error en _download_manga_by_volumes: {e}")
             await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
-
+            
     async def _download_manga_by_chapters(self, progress_msg, manga_id, feed_data, covers_dict, format_choice, quality_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
             vault_dir = os.path.join(os.getcwd(), "vault", "manga", manga_id)
