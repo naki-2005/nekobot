@@ -57,7 +57,6 @@ class NekoTelegram:
         self.app = Client("nekobot", api_id=int(api_id), api_hash=api_hash, bot_token=bot_token)
         self.flask_thread = None
         self.me_id = None
-        self.session = None
         self.download_pool = ThreadPoolExecutor(max_workers=20)
         self.nyaa_cache = {}
         self.current_positions = {}
@@ -263,23 +262,18 @@ class NekoTelegram:
                 print(f"❌ Error en reintento: {e2}")
                 raise
                 
-    async def get_session(self):
-        if not self.session:
-            self.session = aiohttp.ClientSession()
-        return self.session
-    
     async def async_download(self, url, save_path):
         try:
-            session = await self.get_session()
-            async with session.get(url, timeout=30) as response:
-                if response.status == 200:
-                    async with aiofiles.open(save_path, 'wb') as f:
-                        await f.write(await response.read())
-                    return True
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=30) as response:
+                    if response.status == 200:
+                        async with aiofiles.open(save_path, 'wb') as f:
+                            await f.write(await response.read())
+                        return True
         except Exception as e:
             print(f"Error descargando {url}: {e}")
         return False
-    
+        
     async def download_images_concurrently(self, image_urls, max_concurrent=10):
         semaphore = asyncio.Semaphore(max_concurrent)
         
