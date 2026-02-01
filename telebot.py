@@ -1155,9 +1155,7 @@ class NekoTelegram:
                         covers_dict[str(cover['volume'])] = cover['cover']
                 
                 if mode == "vol":
-                    await self._download_manga_by_volumes(
-                        progress_msg, manga_id, feed_data, covers_dict,
-                        format_choice, quality_choice, start_chapter, start_volume, end_chapter, end_volume, user_id
+                    await self._download_manga_by_volumes(progress_msg, manga_id, feed_data, covers_dict, format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id
                     )
                 else:
                     await self._download_manga_by_chapters(
