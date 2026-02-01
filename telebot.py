@@ -1243,13 +1243,17 @@ class NekoTelegram:
                     
                     chapter_range.append(float(chapter_num) if chapter_num and chapter_num.replace('.', '', 1).isdigit() else chapter_num)
                     
-                    chapter_id = chapter.get('chapter_ids', {})
+                    chapter_id = chapter.get('chapter_id')
                     if chapter_id:
-                        if quality_choice == "sd":
-                            images = list(chapter_id.values())
-                        else:
-                            images = list(chapter_id.keys())
-                        total_images_expected += len(images)
+                        try:
+                            dl_json = self.mangadex.dl(chapter_id)
+                            if dl_json:
+                                dl_data = json.loads(dl_json)
+                                if 'error' not in dl_data:
+                                    image_urls = dl_data.get(quality_choice, [])
+                                    total_images_expected += len(image_urls)
+                        except:
+                            continue
                 
                 if total_images_expected == 0:
                     continue
@@ -1275,36 +1279,45 @@ class NekoTelegram:
                             if chap_float > end_chap_float:
                                 break
                         except:
-                            continue
+                        continue
                     
-                    chapter_id = chapter.get('chapter_ids', {})
+                    chapter_id = chapter.get('chapter_id')
                     if not chapter_id:
                         continue
                     
-                    image_urls = []
-                    if quality_choice == "sd":
-                        image_urls = list(chapter_id.values())
-                    else:
-                        image_urls = list(chapter_id.keys())
-                    
-                    if not image_urls:
+                    try:
+                        dl_json = self.mangadex.dl(chapter_id)
+                        if not dl_json:
+                            continue
+                        
+                        dl_data = json.loads(dl_json)
+                        if 'error' in dl_data:
+                            continue
+                        
+                        image_urls = dl_data.get(quality_choice, [])
+                        
+                        if not image_urls:
+                            continue
+                        
+                        downloaded_images = await self.download_images_concurrently(image_urls, max_concurrent=10)
+                        
+                        volume_dir = os.path.join(vault_dir, f"vol_{volume if volume else 'sin_volumen'}")
+                        os.makedirs(volume_dir, exist_ok=True)
+                        
+                        for img_idx, img_path in enumerate(downloaded_images):
+                            chapter_safe = str(chapter_num).replace('.', '_')
+                            new_name = f"vol_{volume if volume else '0'}_chap_{chapter_safe}_img_{img_idx+1:03d}.jpg"
+                            new_path = os.path.join(volume_dir, new_name)
+                            shutil.move(img_path, new_path)
+                            all_volume_images.append(new_path)
+                        
+                        total_images_downloaded += len(downloaded_images)
+                        
+                        await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume if volume else 'Sin volumen'} ({volume_index}/{total_volumes})... ({total_images_downloaded}/{total_images_expected} Imágenes descargadas)")
+                        
+                    except Exception as e:
+                        print(f"Error procesando capítulo {chapter_num}: {e}")
                         continue
-                    
-                    downloaded_images = await self.download_images_concurrently(image_urls, max_concurrent=10)
-                    
-                    volume_dir = os.path.join(vault_dir, f"vol_{volume if volume else 'sin_volumen'}")
-                    os.makedirs(volume_dir, exist_ok=True)
-                    
-                    for img_idx, img_path in enumerate(downloaded_images):
-                        chapter_safe = str(chapter_num).replace('.', '_')
-                        new_name = f"vol_{volume if volume else '0'}_chap_{chapter_safe}_img_{img_idx+1:03d}.jpg"
-                        new_path = os.path.join(volume_dir, new_name)
-                        shutil.move(img_path, new_path)
-                        all_volume_images.append(new_path)
-                    
-                    total_images_downloaded += len(downloaded_images)
-                    
-                    await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume if volume else 'Sin volumen'} ({volume_index}/{total_volumes})... ({total_images_downloaded}/{total_images_expected} Imágenes descargadas)")
                 
                 if not all_volume_images:
                     continue
@@ -1367,7 +1380,7 @@ class NekoTelegram:
         except Exception as e:
             print(f"Error en _download_manga_by_volumes: {e}")
             await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
-    
+
     async def _download_manga_by_chapters(self, progress_msg, manga_id, feed_data, covers_dict, format_choice, quality_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
             vault_dir = os.path.join(os.getcwd(), "vault", "manga", manga_id)
@@ -1432,88 +1445,97 @@ class NekoTelegram:
             
             for idx, chapter in enumerate(filtered_chapters, 1):
                 chapter_num = chapter.get('chapter')
-                chapter_id = chapter.get('chapter_ids', {})
+                chapter_id = chapter.get('chapter_id')
                 volume = chapter.get('volume')
                 
                 if not chapter_id:
                     continue
                 
-                image_urls = []
-                if quality_choice == "sd":
-                    image_urls = list(chapter_id.values())
-                else:
-                    image_urls = list(chapter_id.keys())
-                
-                if not image_urls:
-                    continue
-                
-                total_images = len(image_urls)
-                
-                await safe_call(progress_msg.edit_text, f"📖 Descargando capítulo {chapter_num} ({idx}/{total_chapters})... (0/{total_images} Imágenes descargadas)")
-                
-                downloaded_images = await self.download_images_concurrently(image_urls, max_concurrent=10)
-                
-                if not downloaded_images:
-                    continue
-                
-                chapter_dir = os.path.join(vault_dir, f"chap_{chapter_num}")
-                os.makedirs(chapter_dir, exist_ok=True)
-                
-                chapter_images = []
-                for img_idx, img_path in enumerate(downloaded_images):
-                    chapter_safe = str(chapter_num).replace('.', '_')
-                    new_name = f"vol_{volume if volume else '0'}_chap_{chapter_safe}_img_{img_idx+1:03d}.jpg"
-                    new_path = os.path.join(chapter_dir, new_name)
-                    shutil.move(img_path, new_path)
-                    chapter_images.append(new_path)
-                
-                await safe_call(progress_msg.edit_text, f"📖 Descargando capítulo {chapter_num} ({idx}/{total_chapters})... ({len(downloaded_images)}/{total_images} Imágenes descargadas)")
-                
-                thumbnail_path = None
-                if volume is not None:
-                    volume_str = str(volume)
-                    if volume_str in covers_dict:
-                        cover_url = covers_dict[volume_str]
+                try:
+                    dl_json = self.mangadex.dl(chapter_id)
+                    if not dl_json:
+                        continue
+                    
+                    dl_data = json.loads(dl_json)
+                    if 'error' in dl_data:
+                        continue
+                    
+                    image_urls = dl_data.get(quality_choice, [])
+                    
+                    if not image_urls:
+                        continue
+                    
+                    total_images = len(image_urls)
+                    
+                    await safe_call(progress_msg.edit_text, f"📖 Descargando capítulo {chapter_num} ({idx}/{total_chapters})... (0/{total_images} Imágenes descargadas)")
+                    
+                    downloaded_images = await self.download_images_concurrently(image_urls, max_concurrent=10)
+                    
+                    if not downloaded_images:
+                        continue
+                    
+                    chapter_dir = os.path.join(vault_dir, f"chap_{chapter_num}")
+                    os.makedirs(chapter_dir, exist_ok=True)
+                    
+                    chapter_images = []
+                    for img_idx, img_path in enumerate(downloaded_images):
+                        chapter_safe = str(chapter_num).replace('.', '_')
+                        new_name = f"vol_{volume if volume else '0'}_chap_{chapter_safe}_img_{img_idx+1:03d}.jpg"
+                        new_path = os.path.join(chapter_dir, new_name)
+                        shutil.move(img_path, new_path)
+                        chapter_images.append(new_path)
+                    
+                    await safe_call(progress_msg.edit_text, f"📖 Descargando capítulo {chapter_num} ({idx}/{total_chapters})... ({len(downloaded_images)}/{total_images} Imágenes descargadas)")
+                    
+                    thumbnail_path = None
+                    if volume is not None:
+                        volume_str = str(volume)
+                        if volume_str in covers_dict:
+                            cover_url = covers_dict[volume_str]
+                            try:
+                                thumbnail_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                                thumbnail_path = thumbnail_file.name
+                                thumbnail_file.close()
+                                
+                                if await self.async_download(cover_url, thumbnail_path):
+                                    img = Image.open(thumbnail_path)
+                                    img.thumbnail((320, 320))
+                                    img.save(thumbnail_path, "JPEG")
+                            except Exception as e:
+                                print(f"Error descargando miniatura: {e}")
+                                thumbnail_path = None
+                    
+                    if format_choice == "cbz" and chapter_images:
+                        cbz_path = await self._create_cbz_from_images(f"Capítulo {chapter_num}", chapter_images, user_id)
+                        if cbz_path:
+                            await self._send_document_with_progress(progress_msg.chat.id, cbz_path, f"📖 Capítulo {chapter_num}", thumb=thumbnail_path)
+                    
+                    elif format_choice == "pdf" and chapter_images:
+                        pdf_path = await self._create_pdf_from_images(f"Capítulo {chapter_num}", chapter_images, user_id)
+                        if pdf_path:
+                            await self._send_document_with_progress(progress_msg.chat.id, pdf_path, f"📖 Capítulo {chapter_num}", thumb=thumbnail_path)
+                    
+                    else:
+                        await safe_call(progress_msg.edit_text, f"✅ Capítulo {chapter_num} guardado en vault: {chapter_dir}")
+                    
+                    if thumbnail_path and os.path.exists(thumbnail_path):
                         try:
-                            thumbnail_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-                            thumbnail_path = thumbnail_file.name
-                            thumbnail_file.close()
-                            
-                            if await self.async_download(cover_url, thumbnail_path):
-                                img = Image.open(thumbnail_path)
-                                img.thumbnail((320, 320))
-                                img.save(thumbnail_path, "JPEG")
-                        except Exception as e:
-                            print(f"Error descargando miniatura: {e}")
-                            thumbnail_path = None
+                            os.remove(thumbnail_path)
+                        except:
+                            pass
+                    
+                    await asyncio.sleep(0.2)
                 
-                if format_choice == "cbz" and chapter_images:
-                    cbz_path = await self._create_cbz_from_images(f"Capítulo {chapter_num}", chapter_images, user_id)
-                    if cbz_path:
-                        await self._send_document_with_progress(progress_msg.chat.id, cbz_path, f"📖 Capítulo {chapter_num}", thumb=thumbnail_path)
-                
-                elif format_choice == "pdf" and chapter_images:
-                    pdf_path = await self._create_pdf_from_images(f"Capítulo {chapter_num}", chapter_images, user_id)
-                    if pdf_path:
-                        await self._send_document_with_progress(progress_msg.chat.id, pdf_path, f"📖 Capítulo {chapter_num}", thumb=thumbnail_path)
-                
-                else:
-                    await safe_call(progress_msg.edit_text, f"✅ Capítulo {chapter_num} guardado en vault: {chapter_dir}")
-                
-                if thumbnail_path and os.path.exists(thumbnail_path):
-                    try:
-                        os.remove(thumbnail_path)
-                    except:
-                        pass
-                
-                await asyncio.sleep(0.2)
+                except Exception as e:
+                    print(f"Error descargando capítulo {chapter_num}: {e}")
+                    continue
             
             await safe_call(progress_msg.edit_text, "✅ Descarga de capítulos completada y guardada en vault")
             
         except Exception as e:
             print(f"Error en _download_manga_by_chapters: {e}")
             await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
-
+    
     async def _create_cbz_from_images(self, nombre, image_paths, user_id):
         try:
             safe_nombre = self.neko.clean_name(nombre)
