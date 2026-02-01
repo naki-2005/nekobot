@@ -1173,6 +1173,9 @@ class NekoTelegram:
         except Exception as e:
             print(f"Error en _process_manga_download: {e}")
             await safe_call(message.reply_text, f"❌ Error al procesar la descarga: {e}")
+ 
+
+
     async def _download_manga_by_volumes(self, progress_msg, manga_id, volumes_order, volumes_data, covers_dict, format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
             user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
@@ -1182,17 +1185,27 @@ class NekoTelegram:
             os.makedirs(vault_dir, exist_ok=True)
             
             for volume_index, volume in enumerate(volumes_order, 1):
-                
                 if start_volume and volume != 'sin_volumen':
-                    if self._sort_key(volume) < self._sort_key(str(start_volume)):
+                    try:
+                        if self._sort_key(volume) < self._sort_key(str(start_volume)):
+                            continue
+                    except:
                         continue
                 
                 if end_volume and volume != 'sin_volumen':
-                    if self._sort_key(volume) > self._sort_key(str(end_volume)):
-                        break
+                    try:
+                        if self._sort_key(volume) > self._sort_key(str(end_volume)):
+                            break
+                    except:
+                        continue
                 
+                if volume not in volumes_data:
+                    continue
+                    
                 volume_chapters = volumes_data[volume]
-                volume_chapters.sort(key=lambda x: self._sort_key(x['chapter']))
+                
+                if not volume_chapters:
+                    continue
                 
                 all_volume_images = []
                 chapter_range = []
@@ -1200,21 +1213,36 @@ class NekoTelegram:
                 total_images_expected = 0
                 
                 for chapter in volume_chapters:
-                    chapter_num = chapter['chapter']
+                    if not isinstance(chapter, dict):
+                        continue
+                    
+                    chapter_num = chapter.get('chapter', '0')
                     
                     if start_chapter:
-                        if self._sort_key(chapter_num) < self._sort_key(str(start_chapter)):
+                        try:
+                            if self._sort_key(str(chapter_num)) < self._sort_key(str(start_chapter)):
+                                continue
+                        except:
                             continue
                     
                     if end_chapter:
-                        if self._sort_key(chapter_num) > self._sort_key(str(end_chapter)):
-                            break
+                        try:
+                            if self._sort_key(str(chapter_num)) > self._sort_key(str(end_chapter)):
+                                break
+                        except:
+                            continue
                     
-                    chapter_range.append(float(chapter_num) if chapter_num.replace('.', '', 1).isdigit() else chapter_num)
+                    try:
+                        chapter_value = float(chapter_num) if chapter_num.replace('.', '', 1).isdigit() else chapter_num
+                        chapter_range.append(chapter_value)
+                    except:
+                        continue
                     
-                    image_links = self.neko.download_chapter(chapter['id'])
-                    if image_links:
-                        total_images_expected += len(image_links)
+                    chapter_id = chapter.get('id')
+                    if chapter_id:
+                        image_links = self.neko.download_chapter(chapter_id)
+                        if image_links:
+                            total_images_expected += len(image_links)
                 
                 if total_images_expected == 0:
                     continue
@@ -1222,50 +1250,71 @@ class NekoTelegram:
                 await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume} ({volume_index}/{total_volumes}) en {user_lang.upper()}... (0/{total_images_expected} Imágenes descargadas)")
                 
                 for chapter in volume_chapters:
-                    chapter_num = chapter['chapter']
+                    if not isinstance(chapter, dict):
+                        continue
+                    
+                    chapter_num = chapter.get('chapter', '0')
                     
                     if start_chapter:
-                        if self._sort_key(chapter_num) < self._sort_key(str(start_chapter)):
+                        try:
+                            if self._sort_key(str(chapter_num)) < self._sort_key(str(start_chapter)):
+                                continue
+                        except:
                             continue
                     
                     if end_chapter:
-                        if self._sort_key(chapter_num) > self._sort_key(str(end_chapter)):
-                            break
+                        try:
+                            if self._sort_key(str(chapter_num)) > self._sort_key(str(end_chapter)):
+                                break
+                        except:
+                            continue
                     
-                    image_links = self.neko.download_chapter(chapter['id'])
-                    if image_links:
-                        downloaded_images = await self.download_images_concurrently(image_links, max_concurrent=10)
-                        
-                        volume_dir = os.path.join(vault_dir, f"vol_{volume}")
-                        os.makedirs(volume_dir, exist_ok=True)
-                        
-                        for img_idx, img_path in enumerate(downloaded_images):
-                            new_name = f"vol_{volume}_chap_{chapter_num}_img_{img_idx+1:03d}.jpg"
-                            new_path = os.path.join(volume_dir, new_name)
-                            shutil.move(img_path, new_path)
-                            all_volume_images.append(new_path)
-                        
-                        total_images_downloaded += len(downloaded_images)
-                        
-                        await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume} ({volume_index}/{total_volumes}) en {user_lang.upper()}... ({total_images_downloaded}/{total_images_expected} Imágenes descargadas)")
+                    chapter_id = chapter.get('id')
+                    if not chapter_id:
+                        continue
+                    
+                    image_links = self.neko.download_chapter(chapter_id)
+                    
+                    if not image_links:
+                        continue
+                    
+                    downloaded_images = await self.download_images_concurrently(image_links, max_concurrent=10)
+                    
+                    if not downloaded_images:
+                        continue
+                    
+                    volume_dir = os.path.join(vault_dir, f"vol_{volume}")
+                    os.makedirs(volume_dir, exist_ok=True)
+                    
+                    for img_idx, img_path in enumerate(downloaded_images):
+                        safe_chapter = str(chapter_num).replace('.', '_').replace('/', '_')
+                        new_name = f"vol_{volume}_chap_{safe_chapter}_img_{img_idx+1:03d}.jpg"
+                        new_path = os.path.join(volume_dir, new_name)
+                        shutil.move(img_path, new_path)
+                        all_volume_images.append(new_path)
+                    
+                    total_images_downloaded += len(downloaded_images)
+                    
+                    await safe_call(progress_msg.edit_text, f"📦 Procesando volumen {volume} ({volume_index}/{total_volumes}) en {user_lang.upper()}... ({total_images_downloaded}/{total_images_expected} Imágenes descargadas)")
                 
                 if not all_volume_images:
                     continue
                 
+                volume_name = f"Volumen {volume}"
                 if chapter_range:
-                    min_chap = min(chapter_range)
-                    max_chap = max(chapter_range)
-                    
-                    if volume == 'sin_volumen':
-                        volume_name = f"Capítulos {min_chap}-{max_chap}"
-                    else:
-                        volume_name = f"Volumen {volume}"
+                    try:
+                        min_chap = min(chapter_range)
+                        max_chap = max(chapter_range)
                         
-                        if chapter_range:
+                        if volume == 'sin_volumen':
+                            volume_name = f"Capítulos {min_chap}-{max_chap}"
+                        else:
                             if len(chapter_range) > 1:
                                 volume_name = f"Volumen {volume} ({min_chap}-{max_chap})"
                             else:
                                 volume_name = f"Volumen {volume} ({min_chap})"
+                    except:
+                        volume_name = f"Volumen {volume}"
                 
                 if format_choice == "cbz" and all_volume_images:
                     cbz_path = await self._create_cbz_from_images(volume_name, all_volume_images, user_id)
@@ -1287,7 +1336,7 @@ class NekoTelegram:
         except Exception as e:
             print(f"Error en _download_manga_by_volumes: {e}")
             await safe_call(progress_msg.edit_text, f"❌ Error en la descarga: {e}")
-            
+    
     async def _download_manga_by_chapters(self, progress_msg, manga_id, feed_data, covers_dict, format_choice, quality_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
             vault_dir = os.path.join(os.getcwd(), "vault", "manga", manga_id)
