@@ -1250,6 +1250,24 @@ class NekoTelegram:
                 if total_images_expected == 0:
                     continue
                 
+                thumbnail_path = None
+                if volume is not None:
+                    volume_str = str(volume)
+                    if volume_str in covers_dict:
+                        cover_url = covers_dict[volume_str]
+                        try:
+                            thumbnail_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                            thumbnail_path = thumbnail_file.name
+                            thumbnail_file.close()
+                            
+                            if await self.async_download(cover_url, thumbnail_path):
+                                img = Image.open(thumbnail_path)
+                                img.thumbnail((320, 320))
+                                img.save(thumbnail_path, "JPEG")
+                        except Exception as e:
+                            print(f"Error descargando miniatura: {e}")
+                            thumbnail_path = None
+                
                 volume_name = f"Volumen {volume}" if volume is not None else "Sin volumen"
                 await safe_call(progress_msg.edit_text, f"📦 Procesando {volume_name} ({volume_index}/{total_volumes})... (0/{total_images_expected} Imágenes descargadas)")
                 
@@ -1333,15 +1351,21 @@ class NekoTelegram:
                 if format_choice == "cbz" and all_volume_images:
                     cbz_path = await self._create_cbz_from_images(volume_name, all_volume_images, user_id)
                     if cbz_path:
-                        await self._send_document_with_progress(progress_msg.chat.id, cbz_path, f"📚 {volume_name}")
+                        await self._send_document_with_progress(progress_msg.chat.id, cbz_path, f"📚 {volume_name}", thumb=thumbnail_path)
                 
                 elif format_choice == "pdf" and all_volume_images:
                     pdf_path = await self._create_pdf_from_images(volume_name, all_volume_images, user_id)
                     if pdf_path:
-                        await self._send_document_with_progress(progress_msg.chat.id, pdf_path, f"📚 {volume_name}")
+                        await self._send_document_with_progress(progress_msg.chat.id, pdf_path, f"📚 {volume_name}", thumb=thumbnail_path)
                 
                 else:
                     await safe_call(progress_msg.edit_text, f"✅ Volumen {volume} guardado en vault: {vault_dir}")
+                
+                if thumbnail_path and os.path.exists(thumbnail_path):
+                    try:
+                        os.remove(thumbnail_path)
+                    except:
+                        pass
                 
                 await asyncio.sleep(0.2)
             
