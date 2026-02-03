@@ -1255,18 +1255,31 @@ class NekoTelegram:
                     volume_str = str(volume)
                     if volume_str in covers_dict:
                         cover_url = covers_dict[volume_str]
-                        try:
-                            thumbnail_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-                            thumbnail_path = thumbnail_file.name
-                            thumbnail_file.close()
-                            
-                            if await self.async_download(cover_url, thumbnail_path):
-                                img = Image.open(thumbnail_path)
-                                img.thumbnail((320, 320))
-                                img.save(thumbnail_path, "JPEG")
-                        except Exception as e:
-                            print(f"Error descargando miniatura: {e}")
+                    elif "1" in covers_dict:
+                        cover_url = covers_dict["1"]
+                    else:
+                        cover_url = None
+                else:
+                    if "1" in covers_dict:
+                        cover_url = covers_dict["1"]
+                    else:
+                        cover_url = None
+                
+                if cover_url:
+                    try:
+                        thumbnail_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                        thumbnail_path = thumbnail_file.name
+                        thumbnail_file.close()
+                        
+                        if await self.async_download(cover_url, thumbnail_path):
+                            img = Image.open(thumbnail_path)
+                            img.thumbnail((320, 320))
+                            img.save(thumbnail_path, "JPEG")
+                        else:
                             thumbnail_path = None
+                    except Exception as e:
+                        print(f"Error descargando miniatura: {e}")
+                        thumbnail_path = None
                 
                 volume_name = f"Volumen {volume}" if volume is not None else "Sin volumen"
                 await safe_call(progress_msg.edit_text, f"📦 Procesando {volume_name} ({volume_index}/{total_volumes})... (0/{total_images_expected} Imágenes descargadas)")
