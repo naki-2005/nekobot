@@ -1951,29 +1951,39 @@ class NekoTelegram:
             await asyncio.sleep(e.value)
             await message.edit_text(text, reply_markup=reply_markup)
     
+    
+
     async def _handle_leech_command(self, message):
         user_id = message.from_user.id
+        
+        compress_option = "-z" in message.text
         
         if message.reply_to_message:
             reply = message.reply_to_message
             if reply.document and reply.document.file_size <= 5 * 1024 * 1024:
-                await self._process_torrent_file(message, reply.document)
+                await self._process_torrent_file(message, reply.document, compress_option)
                 return
             elif reply.text:
-                await self._process_torrent_text(message, reply.text)
+                await self._process_torrent_text(message, reply.text, compress_option)
                 return
             else:
                 await safe_call(message.reply_text, "❌ Responde a un mensaje con texto o archivo .torrent (<5MB)")
                 return
         
-        parts = message.text.split(maxsplit=1)
+        parts = message.text.split()
+        torrent_input = None
+        
         if len(parts) > 1:
-            torrent_input = parts[1].strip()
-            await self._process_torrent_text(message, torrent_input)
+            filtered_parts = [p for p in parts[1:] if p != "-z"]
+            if filtered_parts:
+                torrent_input = filtered_parts[0].strip()
+        
+        if torrent_input:
+            await self._process_torrent_text(message, torrent_input, compress_option)
         else:
-            await safe_call(message.reply_text, "❌ Usa: `/leech magnet:...` o `/leech http://...torrent` o responde a un archivo")
+            await safe_call(message.reply_text, "❌ Usa: `/leech magnet:...` o `/leech http://...torrent` o responde a un archivo\nUsa `/leech -z ...` para comprimir antes de enviar")
     
-    async def _process_torrent_file(self, message, document):
+    async def _process_torrent_file(self, message, document, compress_option=False):
         if not document.file_name.endswith('.torrent'):
             await safe_call(message.reply_text, "❌ El archivo debe ser .torrent")
             return
@@ -1990,14 +2000,14 @@ class NekoTelegram:
         magnet = self._torrent_to_magnet(torrent_data)
         os.remove(temp_path)
         
-        await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id)
+        await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_option)
     
-    async def _process_torrent_text(self, message, text):
+    async def _process_torrent_text(self, message, text, compress_option=False):
         text = text.strip()
         
         if text.startswith("magnet:?"):
             magnet = text
-            await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id)
+            await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_option)
             return
         
         elif text.endswith(".torrent"):
@@ -2008,7 +2018,7 @@ class NekoTelegram:
                             if response.status == 200:
                                 torrent_data = await response.read()
                                 magnet = self._torrent_to_magnet(torrent_data)
-                                await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id)
+                                await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_option)
                             else:
                                 await safe_call(message.reply_text, f"❌ Error al descargar")
                 except Exception as e:
@@ -2018,11 +2028,118 @@ class NekoTelegram:
                     with open(text, "rb") as f:
                         torrent_data = f.read()
                     magnet = self._torrent_to_magnet(torrent_data)
-                    await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id)
+                    await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_option)
                 else:
                     await safe_call(message.reply_text, "❌ Archivo no encontrado")
         else:
             await safe_call(message.reply_text, "❌ Enlace no válido")
+    
+    async def _start_torrent_download(self, message, result, user_id, compress_option=False):
+        magnet = result.get("magnet", "")
+        if not magnet:
+            return
+        
+        download_path = os.path.join(os.getcwd(), "vault", str(user_id), "torrents")
+        os.makedirs(download_path, exist_ok=True)
+        
+        status_msg = await safe_call(message.reply_text, "⏳ Iniciando descarga torrent..." + (" (comprimirá en 7z antes de enviar)" if compress_option else ""))
+        
+        try:
+            download_generator = self.neko.download_magnet(magnet, download_path)
+            final_path = None
+            last_progress = ""
+            last_update_time = time.time()
+            
+            async for progress_text in download_generator:
+                if progress_text.startswith("📥"):
+                    current_time = time.time()
+                    if progress_text != last_progress and current_time - last_update_time >= 10:
+                        await safe_call(status_msg.edit_text, progress_text + (" (comprimirá al finalizar)" if compress_option else ""))
+                        last_progress = progress_text
+                        last_update_time = current_time
+                elif progress_text.startswith("✅") and "COMPLETADO" in progress_text:
+                    continue
+                else:
+                    if os.path.exists(progress_text):
+                        final_path = progress_text
+            
+            if final_path and os.path.exists(final_path):
+                try:
+                    await status_msg.delete()
+                except:
+                    pass
+                
+                if compress_option:
+                    await safe_call(message.reply_text, "🗜️ Comprimiendo en 7z...")
+                    
+                    parts = self.neko.compress_to_7z(final_path, 2000)
+                    
+                    if parts:
+                        for part in parts:
+                            await self._send_document_with_progress(
+                                message.chat.id,
+                                part,
+                                caption=f"🗜️ Parte: {os.path.basename(part)}"
+                            )
+                    else:
+                        await safe_call(message.reply_text, "❌ Error al comprimir, enviando archivos normalmente...")
+                        if os.path.isfile(final_path):
+                            await self._send_document_with_progress(
+                                message.chat.id,
+                                final_path,
+                                caption=f"✅ {os.path.basename(final_path)}"
+                            )
+                        elif os.path.isdir(final_path):
+                            for root, dirs, files in os.walk(final_path):
+                                for file in files:
+                                    file_path = os.path.join(root, file)
+                                    try:
+                                        await self._send_document_with_progress(
+                                            message.chat.id,
+                                            file_path,
+                                            caption=f"✅ {os.path.basename(file_path)}"
+                                        )
+                                        await asyncio.sleep(0.5)
+                                    except Exception as e:
+                                        print(f"Error enviando archivo {file_path}: {e}")
+                else:
+                    if os.path.isfile(final_path):
+                        await self._send_document_with_progress(
+                            message.chat.id,
+                            final_path,
+                            caption=f"✅ {os.path.basename(final_path)}"
+                        )
+                    elif os.path.isdir(final_path):
+                        for root, dirs, files in os.walk(final_path):
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                try:
+                                    await self._send_document_with_progress(
+                                        message.chat.id,
+                                        file_path,
+                                        caption=f"✅ {os.path.basename(file_path)}"
+                                    )
+                                    await asyncio.sleep(0.5)
+                                except Exception as e:
+                                    print(f"Error enviando archivo {file_path}: {e}")
+                
+                download_base = os.path.dirname(download_path)
+                if os.path.exists(download_base):
+                    shutil.rmtree(download_base, ignore_errors=True)
+            
+            else:
+                try:
+                    await status_msg.delete()
+                except:
+                    pass
+                await safe_call(message.reply_text, "✅ Descarga completada pero no se encontraron archivos para enviar")
+            
+        except Exception as e:
+            try:
+                await status_msg.delete()
+            except:
+                pass
+            await safe_call(message.reply_text, f"❌ Error en la descarga torrent: {str(e)}")
     
     def _torrent_to_magnet(self, torrent_data: bytes) -> str:
         try:
@@ -2049,69 +2166,7 @@ class NekoTelegram:
             return magnet
         except Exception as e:
             raise Exception(f"Error convirtiendo torrent a magnet: {e}")
-    
-    async def _start_torrent_download(self, message, result, user_id):
-        magnet = result.get("magnet", "")
-        if not magnet:
-            return
         
-        download_path = os.path.join(os.getcwd(), "vault", str(user_id))
-        os.makedirs(download_path, exist_ok=True)
-        
-        status_msg = await safe_call(message.reply_text, "⏳ Iniciando descarga torrent...")
-        
-        try:
-            download_generator = self.neko.download_magnet(magnet, download_path)
-            final_path = None
-            last_progress = ""
-            last_update_time = time.time()
-            
-            async for progress_text in download_generator:
-                if progress_text.startswith("📥"):
-                    current_time = time.time()
-                    if progress_text != last_progress and current_time - last_update_time >= 10:
-                        await safe_call(status_msg.edit_text, progress_text)
-                        last_progress = progress_text
-                        last_update_time = current_time
-                elif progress_text.startswith("✅") and "COMPLETADO" in progress_text:
-                    continue
-                else:
-                    if os.path.exists(progress_text):
-                        final_path = progress_text
-            
-            if final_path and os.path.exists(final_path):
-                if os.path.isfile(final_path):
-                    await self._send_document_with_progress(
-                        message.chat.id,
-                        final_path,
-                        caption=f"✅ {os.path.basename(final_path)}"
-                    )
-                elif os.path.isdir(final_path):
-                    for root, dirs, files in os.walk(final_path):
-                        for file in files:
-                            file_path = os.path.join(root, file)
-                            try:
-                                await self._send_document_with_progress(
-                                    message.chat.id,
-                                    file_path,
-                                    caption=f"✅ {os.path.basename(file_path)}"
-                                )
-                                await asyncio.sleep(0.5)
-                            except Exception as e:
-                                print(f"Error enviando archivo {file_path}: {e}")
-            
-            try:
-                await status_msg.delete()
-            except:
-                pass
-            
-        except Exception as e:
-            try:
-                await status_msg.delete()
-            except:
-                pass
-            await safe_call(message.reply_text, f"❌ Error en la descarga")
-    
     async def _process_mega_download(self, message, mega_link):
         try:
             status_msg = await safe_call(message.reply_text, "⏳ Iniciando descarga de MEGA...")
