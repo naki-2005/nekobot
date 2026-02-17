@@ -54,7 +54,6 @@ def process_queue(queue_id, codes, mode, action):
             
             if result and isinstance(result, dict) and "code" in result:
                 base_name = f"{result.get('title', 'unknown')} - {result.get('code', 'unknown')}"
-                safe_name = neko_instance.clean_name(base_name)
                 
                 if action == 'view':
                     results.append({
@@ -66,23 +65,19 @@ def process_queue(queue_id, codes, mode, action):
                         'links': result.get("image_links", [])
                     })
                     successful += 1
-                else:
-                    json_path = os.path.join(BASE_DIR, f"{safe_name}.json")
-                    txt_path = os.path.join(BASE_DIR, f"{safe_name}.txt")
-                    
-                    with open(json_path, 'w', encoding='utf-8') as f:
-                        json.dump(result, f, indent=2, ensure_ascii=False)
-                    
+                elif action == 'cbz':
                     if "image_links" in result and isinstance(result["image_links"], list):
-                        with open(txt_path, 'w', encoding='utf-8') as f:
-                            for link in result["image_links"]:
-                                f.write(f"{link}\n")
-                        
-                        if action == 'cbz':
-                            neko_instance.create_cbz(base_name, result["image_links"])
-                        elif action == 'pdf':
-                            neko_instance.create_pdf(base_name, result["image_links"])
-                        
+                        neko_instance.create_cbz(base_name, result["image_links"])
+                        results.append({
+                            'code': code,
+                            'success': True,
+                            'title': result.get('title', 'unknown'),
+                            'cover': result.get('cover_image') or result["image_links"][0]
+                        })
+                        successful += 1
+                elif action == 'pdf':
+                    if "image_links" in result and isinstance(result["image_links"], list):
+                        neko_instance.create_pdf(base_name, result["image_links"])
                         results.append({
                             'code': code,
                             'success': True,
@@ -316,6 +311,21 @@ def upload_file():
             file.save(save_path)
     return redirect(url_for("dir_listing", req_path=""))
 
+@app.route("/viewer")
+def viewer():
+    links_json = request.args.get("links")
+    if not links_json:
+        return "No links provided", 400
+    
+    try:
+        links = json.loads(links_json)
+        html = "<h1>Visor de imagenes</h1>"
+        for link in links:
+            html += f'<img src="{link}" style="max-width:100%; display:block; margin:10px 0;"><br>'
+        return html
+    except:
+        return "Error loading links", 400
+
 @app.route("/queue/<queue_id>")
 def view_queue(queue_id):
     if queue_id not in download_queues:
@@ -341,22 +351,23 @@ def view_queue(queue_id):
                 {% endif %}
                 {% if r.data %}
                     <br>
-                    <form method="post" action="/save_json" style="display:inline;">
+                    <a href="/viewer?links={{ r.links | tojson | urlencode }}" target="_blank"><button>Ver</button></a>
+                    <form method="post" action="/save_json" style="display:inline;" target="_blank">
                         <input type="hidden" name="data" value='{{ r.data | tojson }}'>
                         <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
                         <button type="submit">JSON</button>
                     </form>
-                    <form method="post" action="/save_txt" style="display:inline;">
+                    <form method="post" action="/save_txt" style="display:inline;" target="_blank">
                         <input type="hidden" name="links" value='{{ r.links | tojson }}'>
                         <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
                         <button type="submit">TXT</button>
                     </form>
-                    <form method="post" action="/create_pdf_from_data" style="display:inline;">
+                    <form method="post" action="/create_pdf_from_data" style="display:inline;" target="_blank">
                         <input type="hidden" name="links" value='{{ r.links | tojson }}'>
                         <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
                         <button type="submit">PDF</button>
                     </form>
-                    <form method="post" action="/create_cbz_from_data" style="display:inline;">
+                    <form method="post" action="/create_cbz_from_data" style="display:inline;" target="_blank">
                         <input type="hidden" name="links" value='{{ r.links | tojson }}'>
                         <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
                         <button type="submit">CBZ</button>
@@ -378,18 +389,55 @@ def view_queue(queue_id):
     <p><a href="/queue/{{ queue_id }}">Actualizar</a></p>
     ''', current=queue['current'], total=queue['total'], current_code=queue['current_code'], queue_id=queue_id)
 
-@app.route("/process", methods=["POST"])
-def process():
-    mode = request.form.get("mode")
+@app.route("/process_nhentai", methods=["POST"])
+def process_nhentai():
     action = request.form.get("action")
     codes_string = request.form.get("codes", "").strip()
     
-    if not codes_string or not mode or not action:
+    if not codes_string or not action:
         return redirect(url_for("nekotools"))
     
     codes = split_codes(codes_string)
     if not codes:
         return redirect(url_for("nekotools", result="No se encontraron codigos validos"))
+    
+    if len(codes) == 1 and action == 'view':
+        result = neko_instance.vnh(codes[0])
+        if isinstance(result, dict) and "code" in result:
+            base_name = f"{result.get('title', 'unknown')} - {result.get('code', 'unknown')}"
+            safe_name = neko_instance.clean_name(base_name)
+            
+            links_json = json.dumps(result.get("image_links", []))
+            data_json = json.dumps(result)
+            
+            buttons = f'''
+            <h1>Resultado de {codes[0]}</h1>
+            <img src="{result.get('cover_image') or result['image_links'][0]}" style="max-width:200px;">
+            <pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>
+            <a href="/viewer?links={links_json}" target="_blank"><button>Ver</button></a>
+            <form method="post" action="/save_json" style="display:inline;" target="_blank">
+                <input type="hidden" name="data" value='{data_json}'>
+                <input type="hidden" name="filename" value="{base_name}">
+                <button type="submit">JSON</button>
+            </form>
+            <form method="post" action="/save_txt" style="display:inline;" target="_blank">
+                <input type="hidden" name="links" value='{links_json}'>
+                <input type="hidden" name="filename" value="{base_name}">
+                <button type="submit">TXT</button>
+            </form>
+            <form method="post" action="/create_pdf_from_data" style="display:inline;" target="_blank">
+                <input type="hidden" name="links" value='{links_json}'>
+                <input type="hidden" name="filename" value="{base_name}">
+                <button type="submit">PDF</button>
+            </form>
+            <form method="post" action="/create_cbz_from_data" style="display:inline;" target="_blank">
+                <input type="hidden" name="links" value='{links_json}'>
+                <input type="hidden" name="filename" value="{base_name}">
+                <button type="submit">CBZ</button>
+            </form>
+            <p><a href="/nekotools">Volver</a></p>
+            '''
+            return buttons
     
     queue_id = str(uuid.uuid4())
     download_queues[queue_id] = {
@@ -402,7 +450,74 @@ def process():
         'failed': 0
     }
     
-    thread = threading.Thread(target=process_queue, args=(queue_id, codes, mode, action))
+    thread = threading.Thread(target=process_queue, args=(queue_id, codes, 'nhentai', action))
+    thread.daemon = True
+    thread.start()
+    
+    return redirect(url_for('view_queue', queue_id=queue_id))
+
+@app.route("/process_3hentai", methods=["POST"])
+def process_3hentai():
+    action = request.form.get("action")
+    codes_string = request.form.get("codes", "").strip()
+    
+    if not codes_string or not action:
+        return redirect(url_for("nekotools"))
+    
+    codes = split_codes(codes_string)
+    if not codes:
+        return redirect(url_for("nekotools", result="No se encontraron codigos validos"))
+    
+    if len(codes) == 1 and action == 'view':
+        result = neko_instance.v3h(codes[0])
+        if isinstance(result, dict) and "code" in result:
+            base_name = f"{result.get('title', 'unknown')} - {result.get('code', 'unknown')}"
+            safe_name = neko_instance.clean_name(base_name)
+            
+            links_json = json.dumps(result.get("image_links", []))
+            data_json = json.dumps(result)
+            
+            buttons = f'''
+            <h1>Resultado de {codes[0]}</h1>
+            <img src="{result.get('cover_image') or result['image_links'][0]}" style="max-width:200px;">
+            <pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>
+            <a href="/viewer?links={links_json}" target="_blank"><button>Ver</button></a>
+            <form method="post" action="/save_json" style="display:inline;" target="_blank">
+                <input type="hidden" name="data" value='{data_json}'>
+                <input type="hidden" name="filename" value="{base_name}">
+                <button type="submit">JSON</button>
+            </form>
+            <form method="post" action="/save_txt" style="display:inline;" target="_blank">
+                <input type="hidden" name="links" value='{links_json}'>
+                <input type="hidden" name="filename" value="{base_name}">
+                <button type="submit">TXT</button>
+            </form>
+            <form method="post" action="/create_pdf_from_data" style="display:inline;" target="_blank">
+                <input type="hidden" name="links" value='{links_json}'>
+                <input type="hidden" name="filename" value="{base_name}">
+                <button type="submit">PDF</button>
+            </form>
+            <form method="post" action="/create_cbz_from_data" style="display:inline;" target="_blank">
+                <input type="hidden" name="links" value='{links_json}'>
+                <input type="hidden" name="filename" value="{base_name}">
+                <button type="submit">CBZ</button>
+            </form>
+            <p><a href="/nekotools">Volver</a></p>
+            '''
+            return buttons
+    
+    queue_id = str(uuid.uuid4())
+    download_queues[queue_id] = {
+        'status': 'processing',
+        'total': len(codes),
+        'current': 0,
+        'current_code': '',
+        'results': [],
+        'successful': 0,
+        'failed': 0
+    }
+    
+    thread = threading.Thread(target=process_queue, args=(queue_id, codes, '3hentai', action))
     thread.daemon = True
     thread.start()
     
@@ -418,7 +533,7 @@ def save_json():
         json_path = os.path.join(BASE_DIR, f"{safe_name}.json")
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-        return redirect(url_for("nekotools", result=f"JSON guardado: {safe_name}.json"))
+        return f"JSON guardado: {safe_name}.json<br><a href='/nekotools'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/save_txt", methods=["POST"])
@@ -432,7 +547,7 @@ def save_txt():
         with open(txt_path, 'w', encoding='utf-8') as f:
             for link in links:
                 f.write(f"{link}\n")
-        return redirect(url_for("nekotools", result=f"TXT guardado: {safe_name}.txt"))
+        return f"TXT guardado: {safe_name}.txt<br><a href='/nekotools'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/create_pdf_from_data", methods=["POST"])
@@ -444,7 +559,7 @@ def create_pdf_from_data():
         result = neko_instance.create_pdf(filename, links)
         if result and os.path.exists(result):
             safe_name = neko_instance.clean_name(filename)
-            return redirect(url_for("nekotools", result=f"PDF creado: {safe_name}.pdf"))
+            return f"PDF creado: {safe_name}.pdf<br><a href='/nekotools'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/create_cbz_from_data", methods=["POST"])
@@ -456,7 +571,7 @@ def create_cbz_from_data():
         result = neko_instance.create_cbz(filename, links)
         if result and os.path.exists(result):
             safe_name = neko_instance.clean_name(filename)
-            return redirect(url_for("nekotools", result=f"CBZ creado: {safe_name}.cbz"))
+            return f"CBZ creado: {safe_name}.cbz<br><a href='/nekotools'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/nekotools", methods=["GET", "POST"])
@@ -467,8 +582,7 @@ def nekotools():
     <h1>NekoTools</h1>
     
     <h2>nhentai</h2>
-    <form method="post" action="/process">
-        <input type="hidden" name="mode" value="nhentai">
+    <form method="post" action="/process_nhentai">
         Codigos: <input type="text" name="codes" size="50" placeholder="318156 o 318156 318157 318158">
         <br>
         <button type="submit" name="action" value="view">Ver</button>
@@ -477,8 +591,7 @@ def nekotools():
     </form>
     
     <h2>3hentai</h2>
-    <form method="post" action="/process">
-        <input type="hidden" name="mode" value="3hentai">
+    <form method="post" action="/process_3hentai">
         Codigos: <input type="text" name="codes" size="50" placeholder="318156 o 318156 318157 318158">
         <br>
         <button type="submit" name="action" value="view">Ver</button>
