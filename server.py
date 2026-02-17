@@ -3,6 +3,7 @@ import json
 import threading
 import time
 import uuid
+import urllib.parse
 from flask import Flask, request, redirect, url_for, send_file, render_template_string
 from werkzeug.utils import secure_filename
 from neko import Neko
@@ -314,14 +315,49 @@ def upload_file():
 @app.route("/viewer")
 def viewer():
     links_json = request.args.get("links")
+    title = request.args.get("title", "")
     if not links_json:
         return "No links provided", 400
     
     try:
         links = json.loads(links_json)
-        html = "<h1>Visor de imagenes</h1>"
+        title_tag = f"<title>{title}</title>" if title else ""
+        html = f'''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            {title_tag}
+            <style>
+                body {{
+                    margin: 0;
+                    padding: 20px 0;
+                    background-color: #f0f0f0;
+                }}
+                .image-container {{
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    gap: 20px;
+                }}
+                .image-container img {{
+                    max-width: 100%;
+                    height: auto;
+                    display: block;
+                    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="image-container">
+        '''
         for link in links:
-            html += f'<img src="{link}" style="max-width:100%; display:block; margin:10px 0;"><br>'
+            html += f'<img src="{link}">'
+        
+        html += '''
+            </div>
+        </body>
+        </html>
+        '''
         return html
     except:
         return "Error loading links", 400
@@ -351,7 +387,7 @@ def view_queue(queue_id):
                 {% endif %}
                 {% if r.data %}
                     <br>
-                    <a href="/viewer?links={{ r.links | tojson | urlencode }}" target="_blank"><button>Ver</button></a>
+                    <a href="/viewer?links={{ r.links | tojson | urlencode }}&title={{ r.title }}" target="_blank"><button>Ver</button></a>
                     <form method="post" action="/save_json" style="display:inline;" target="_blank">
                         <input type="hidden" name="data" value='{{ r.data | tojson }}'>
                         <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
@@ -409,12 +445,13 @@ def process_nhentai():
             
             links_json = json.dumps(result.get("image_links", []))
             data_json = json.dumps(result)
+            title = result.get('title', 'unknown')
             
             buttons = f'''
             <h1>Resultado de {codes[0]}</h1>
             <img src="{result.get('cover_image') or result['image_links'][0]}" style="max-width:200px;">
             <pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>
-            <a href="/viewer?links={links_json}" target="_blank"><button>Ver</button></a>
+            <a href="/viewer?links={urllib.parse.quote(links_json)}&title={urllib.parse.quote(title)}" target="_blank"><button>Ver</button></a>
             <form method="post" action="/save_json" style="display:inline;" target="_blank">
                 <input type="hidden" name="data" value='{data_json}'>
                 <input type="hidden" name="filename" value="{base_name}">
@@ -476,12 +513,13 @@ def process_3hentai():
             
             links_json = json.dumps(result.get("image_links", []))
             data_json = json.dumps(result)
+            title = result.get('title', 'unknown')
             
             buttons = f'''
             <h1>Resultado de {codes[0]}</h1>
             <img src="{result.get('cover_image') or result['image_links'][0]}" style="max-width:200px;">
             <pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>
-            <a href="/viewer?links={links_json}" target="_blank"><button>Ver</button></a>
+            <a href="/viewer?links={urllib.parse.quote(links_json)}&title={urllib.parse.quote(title)}" target="_blank"><button>Ver</button></a>
             <form method="post" action="/save_json" style="display:inline;" target="_blank">
                 <input type="hidden" name="data" value='{data_json}'>
                 <input type="hidden" name="filename" value="{base_name}">
