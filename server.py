@@ -43,7 +43,7 @@ def dir_listing(req_path):
         
         if os.path.isdir(abs_f):
             file_links.append(
-                f'<li><input type="checkbox" name="selected" value="{full_path}" class="file-checkbox"> '
+                f'<li><input type="checkbox" name="selected" value="{full_path}" class="file-checkbox" onchange="updateButtons()"> '
                 f'<a href="/{full_path}{"?preview=true" if preview_mode else ""}">{f}/</a> '
                 f'<form style="display:inline;" method="post" action="/delete">'
                 f'<input type="hidden" name="path" value="{full_path}">'
@@ -56,7 +56,7 @@ def dir_listing(req_path):
                 link = f'<a href="/{full_path}">{f}</a>'
             
             file_links.append(
-                f'<li><input type="checkbox" name="selected" value="{full_path}" class="file-checkbox"> '
+                f'<li><input type="checkbox" name="selected" value="{full_path}" class="file-checkbox" onchange="updateButtons()"> '
                 f'{link} '
                 f'<form style="display:inline;" method="post" action="/delete">'
                 f'<input type="hidden" name="path" value="{full_path}">'
@@ -79,27 +79,72 @@ def dir_listing(req_path):
     
     selection_buttons = '''
     <div>
-        <button type="button" onclick="selectAll()">Seleccionar Todo</button>
-        <button type="button" onclick="deselectAll()">Deseleccionar Todo</button>
-        <button type="button" onclick="selectRange()">Seleccionar Intervalo</button>
-        <button type="button" onclick="deleteSelected()">Borrar Seleccionados</button>
+        <button type="button" id="selectAllBtn" onclick="selectAll()">Seleccionar Todo</button>
+        <button type="button" id="deselectAllBtn" onclick="deselectAll()" style="display:none;">Deseleccionar Todo</button>
+        <button type="button" id="selectRangeBtn" onclick="selectRange()" style="display:none;">Seleccionar Intervalo</button>
+        <button type="button" id="deleteSelectedBtn" onclick="deleteSelected()" style="display:none;">Borrar Seleccionados</button>
     </div>
     '''
     
     script = '''
     <script>
+    function updateButtons() {
+        var checkboxes = document.getElementsByClassName('file-checkbox');
+        var anyChecked = false;
+        var allChecked = true;
+        var checkedCount = 0;
+        
+        for(var i=0; i<checkboxes.length; i++) {
+            if(checkboxes[i].checked) {
+                anyChecked = true;
+                checkedCount++;
+            } else {
+                allChecked = false;
+            }
+        }
+        
+        var selectAllBtn = document.getElementById('selectAllBtn');
+        var deselectAllBtn = document.getElementById('deselectAllBtn');
+        var selectRangeBtn = document.getElementById('selectRangeBtn');
+        var deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+        
+        if(allChecked && checkboxes.length > 0) {
+            selectAllBtn.style.display = 'none';
+            deselectAllBtn.style.display = 'inline';
+        } else {
+            selectAllBtn.style.display = 'inline';
+            deselectAllBtn.style.display = 'none';
+        }
+        
+        if(checkedCount >= 2) {
+            selectRangeBtn.style.display = 'inline';
+        } else {
+            selectRangeBtn.style.display = 'none';
+        }
+        
+        if(checkedCount >= 1) {
+            deleteSelectedBtn.style.display = 'inline';
+        } else {
+            deleteSelectedBtn.style.display = 'none';
+        }
+    }
+    
     function selectAll() {
         var checkboxes = document.getElementsByClassName('file-checkbox');
         for(var i=0; i<checkboxes.length; i++) {
             checkboxes[i].checked = true;
         }
+        updateButtons();
     }
+    
     function deselectAll() {
         var checkboxes = document.getElementsByClassName('file-checkbox');
         for(var i=0; i<checkboxes.length; i++) {
             checkboxes[i].checked = false;
         }
+        updateButtons();
     }
+    
     function selectRange() {
         var checkboxes = document.getElementsByClassName('file-checkbox');
         var selected = [];
@@ -117,7 +162,9 @@ def dir_listing(req_path):
                 checkboxes[i].checked = true;
             }
         }
+        updateButtons();
     }
+    
     function deleteSelected() {
         var checkboxes = document.getElementsByClassName('file-checkbox');
         var selected = [];
@@ -141,6 +188,8 @@ def dir_listing(req_path):
             form.submit();
         }
     }
+    
+    updateButtons();
     </script>
     '''
     
