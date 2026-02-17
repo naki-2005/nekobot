@@ -267,9 +267,9 @@ def create_pdf_from_data():
     filename = request.form.get("filename")
     if links_json and filename:
         links = json.loads(links_json)
-        safe_name = neko_instance.clean_name(filename)
-        result = neko_instance.create_pdf(safe_name, links)
+        result = neko_instance.create_pdf(filename, links)
         if result and os.path.exists(result):
+            safe_name = neko_instance.clean_name(filename)
             return redirect(url_for("nekotools", result=f"PDF creado: {safe_name}.pdf"))
     return redirect(url_for("nekotools"))
 
@@ -279,9 +279,9 @@ def create_cbz_from_data():
     filename = request.form.get("filename")
     if links_json and filename:
         links = json.loads(links_json)
-        safe_name = neko_instance.clean_name(filename)
-        result = neko_instance.create_cbz(safe_name, links)
+        result = neko_instance.create_cbz(filename, links)
         if result and os.path.exists(result):
+            safe_name = neko_instance.clean_name(filename)
             return redirect(url_for("nekotools", result=f"CBZ creado: {safe_name}.cbz"))
     return redirect(url_for("nekotools"))
 
