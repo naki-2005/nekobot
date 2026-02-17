@@ -1,6 +1,6 @@
 import os
 import json
-from flask import Flask, request, redirect, url_for, send_file, render_template_string, Response
+from flask import Flask, request, redirect, url_for, send_file, render_template_string
 from werkzeug.utils import secure_filename
 from neko import Neko
 
@@ -35,7 +35,7 @@ def dir_listing(req_path):
     
     files = neko_instance.sort_directory(abs_path)
     file_links = []
-    for i, f in enumerate(files):
+    for f in files:
         full_path = os.path.join(req_path, f)
         abs_f = os.path.join(abs_path, f)
         size = os.path.getsize(abs_f) if os.path.isfile(abs_f) else 0
@@ -268,9 +268,8 @@ def create_pdf_from_data():
     if links_json and filename:
         links = json.loads(links_json)
         safe_name = neko_instance.clean_name(filename)
-        pdf_path = os.path.join(BASE_DIR, f"{safe_name}.pdf")
-        result = neko_instance.create_pdf(pdf_path, links)
-        if result:
+        result = neko_instance.create_pdf(safe_name, links)
+        if result and os.path.exists(result):
             return redirect(url_for("nekotools", result=f"PDF creado: {safe_name}.pdf"))
     return redirect(url_for("nekotools"))
 
@@ -281,9 +280,8 @@ def create_cbz_from_data():
     if links_json and filename:
         links = json.loads(links_json)
         safe_name = neko_instance.clean_name(filename)
-        cbz_path = os.path.join(BASE_DIR, f"{safe_name}.cbz")
-        result = neko_instance.create_cbz(cbz_path, links)
-        if result:
+        result = neko_instance.create_cbz(safe_name, links)
+        if result and os.path.exists(result):
             return redirect(url_for("nekotools", result=f"CBZ creado: {safe_name}.cbz"))
     return redirect(url_for("nekotools"))
 
