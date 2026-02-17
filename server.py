@@ -49,7 +49,7 @@ def process_download_queue(queue_id, codes, mode):
         queue['current_code'] = code
         
         try:
-            if mode == 'vnh':
+            if mode == 'nhentai':
                 result = neko_instance.vnh(code)
             else:
                 result = neko_instance.v3h(code)
@@ -452,27 +452,39 @@ def nekotools():
                 result = neko_instance.s3h(search_term, int(page) if page.isdigit() else 1)
                 result_text = json.dumps(result, indent=2, ensure_ascii=False)
         
-        elif action == "vnh":
-            code = request.form.get("vnh_code", "").strip()
+        elif action == "vnh" or action == "v3h":
+            code = request.form.get("code", "").strip()
             if code:
-                result = neko_instance.vnh(code)
-                result_text = json.dumps(result, indent=2, ensure_ascii=False)
-                if isinstance(result, dict) and "code" in result:
-                    saved_data = json.dumps(result)
-                    saved_links = json.dumps(result.get("image_links", []))
-                    saved_title = result.get('title', 'unknown')
-                    saved_code = result.get('code', 'unknown')
-        
-        elif action == "v3h":
-            code = request.form.get("v3h_code", "").strip()
-            if code:
-                result = neko_instance.v3h(code)
-                result_text = json.dumps(result, indent=2, ensure_ascii=False)
-                if isinstance(result, dict) and "code" in result:
-                    saved_data = json.dumps(result)
-                    saved_links = json.dumps(result.get("image_links", []))
-                    saved_title = result.get('title', 'unknown')
-                    saved_code = result.get('code', 'unknown')
+                codes = split_codes(code)
+                
+                if len(codes) > 1:
+                    mode = 'nhentai' if action == 'vnh' else '3hentai'
+                    queue_id = str(uuid.uuid4())
+                    download_queues[queue_id] = {
+                        'status': 'processing',
+                        'total': len(codes),
+                        'current': 0,
+                        'current_code': '',
+                        'results': [],
+                        'successful': 0,
+                        'failed': 0
+                    }
+                    thread = threading.Thread(target=process_download_queue, args=(queue_id, codes, mode))
+                    thread.daemon = True
+                    thread.start()
+                    return redirect(url_for('view_queue', queue_id=queue_id))
+                else:
+                    if action == 'vnh':
+                        result = neko_instance.vnh(codes[0])
+                    else:
+                        result = neko_instance.v3h(codes[0])
+                    
+                    result_text = json.dumps(result, indent=2, ensure_ascii=False)
+                    if isinstance(result, dict) and "code" in result:
+                        saved_data = json.dumps(result)
+                        saved_links = json.dumps(result.get("image_links", []))
+                        saved_title = result.get('title', 'unknown')
+                        saved_code = result.get('code', 'unknown')
         
         elif action == "download":
             url = request.form.get("download_url", "").strip()
@@ -604,15 +616,6 @@ def nekotools():
     html = '''
     <h1>NekoTools</h1>
     
-    <h2>Descarga Automatica Multiple</h2>
-    <form method="post" action="/auto_download">
-        Codigos (separados por , ; espacio /):<br>
-        <input type="text" name="codes" size="50" placeholder="318156 318157 318158">
-        <br>
-        <button type="submit" name="mode" value="vnh">Auto Guardar (CBZ)</button>
-        <button type="submit" name="mode" value="v3h">Auto Guardar (PDF)</button>
-    </form>
-    
     <h2>Descargar desde JSON</h2>
     <form method="post" enctype="multipart/form-data">
         <input type="file" name="json_file" accept=".json">
@@ -685,14 +688,14 @@ def nekotools():
     
     <h2>Ver nhentai</h2>
     <form method="post">
-        Codigo: <input type="text" name="vnh_code" placeholder="Codigo del doujin">
+        Codigo(s): <input type="text" name="code" size="50" placeholder="318156 o 318156 318157 318158">
         <input type="hidden" name="action" value="vnh">
         <button type="submit">Ver VNH</button>
     </form>
     
     <h2>Ver 3hentai</h2>
     <form method="post">
-        Codigo: <input type="text" name="v3h_code" placeholder="Codigo del doujin">
+        Codigo(s): <input type="text" name="code" size="50" placeholder="318156 o 318156 318157 318158">
         <input type="hidden" name="action" value="v3h">
         <button type="submit">Ver V3H</button>
     </form>
