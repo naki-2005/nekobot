@@ -35,7 +35,7 @@ def dir_listing(req_path):
     
     files = neko_instance.sort_directory(abs_path)
     file_links = []
-    for f in files:
+    for i, f in enumerate(files):
         full_path = os.path.join(req_path, f)
         abs_f = os.path.join(abs_path, f)
         size = os.path.getsize(abs_f) if os.path.isfile(abs_f) else 0
@@ -43,7 +43,8 @@ def dir_listing(req_path):
         
         if os.path.isdir(abs_f):
             file_links.append(
-                f'<li><a href="/{full_path}{"?preview=true" if preview_mode else ""}">{f}/</a> '
+                f'<li><input type="checkbox" name="selected" value="{full_path}" class="file-checkbox"> '
+                f'<a href="/{full_path}{"?preview=true" if preview_mode else ""}">{f}/</a> '
                 f'<form style="display:inline;" method="post" action="/delete">'
                 f'<input type="hidden" name="path" value="{full_path}">'
                 f'<button type="submit">Borrar</button></form> ({formatted_size})</li>'
@@ -55,7 +56,8 @@ def dir_listing(req_path):
                 link = f'<a href="/{full_path}">{f}</a>'
             
             file_links.append(
-                f'<li>{link} '
+                f'<li><input type="checkbox" name="selected" value="{full_path}" class="file-checkbox"> '
+                f'{link} '
                 f'<form style="display:inline;" method="post" action="/delete">'
                 f'<input type="hidden" name="path" value="{full_path}">'
                 f'<button type="submit">Borrar</button></form> ({formatted_size})</li>'
@@ -64,7 +66,7 @@ def dir_listing(req_path):
     toggle_button = f'''
     <form method="get" style="margin-bottom: 20px;">
         <input type="hidden" name="preview" value="{str(not preview_mode).lower()}">
-        <button type="submit">{"🔗 Modo Descarga" if preview_mode else "👁️ Modo Preview"}</button>
+        <button type="submit">{"Modo Descarga" if preview_mode else "Modo Preview"}</button>
     </form>
     '''
     
@@ -75,9 +77,76 @@ def dir_listing(req_path):
     </form>
     '''
     
+    selection_buttons = '''
+    <div>
+        <button type="button" onclick="selectAll()">Seleccionar Todo</button>
+        <button type="button" onclick="deselectAll()">Deseleccionar Todo</button>
+        <button type="button" onclick="selectRange()">Seleccionar Intervalo</button>
+        <button type="button" onclick="deleteSelected()">Borrar Seleccionados</button>
+    </div>
+    '''
+    
+    script = '''
+    <script>
+    function selectAll() {
+        var checkboxes = document.getElementsByClassName('file-checkbox');
+        for(var i=0; i<checkboxes.length; i++) {
+            checkboxes[i].checked = true;
+        }
+    }
+    function deselectAll() {
+        var checkboxes = document.getElementsByClassName('file-checkbox');
+        for(var i=0; i<checkboxes.length; i++) {
+            checkboxes[i].checked = false;
+        }
+    }
+    function selectRange() {
+        var checkboxes = document.getElementsByClassName('file-checkbox');
+        var selected = [];
+        for(var i=0; i<checkboxes.length; i++) {
+            if(checkboxes[i].checked) {
+                selected.push(i);
+            }
+        }
+        if(selected.length >= 2) {
+            var first = selected[0];
+            var last = selected[selected.length-1];
+            var min = Math.min(first, last);
+            var max = Math.max(first, last);
+            for(var i=min; i<=max; i++) {
+                checkboxes[i].checked = true;
+            }
+        }
+    }
+    function deleteSelected() {
+        var checkboxes = document.getElementsByClassName('file-checkbox');
+        var selected = [];
+        for(var i=0; i<checkboxes.length; i++) {
+            if(checkboxes[i].checked) {
+                selected.push(checkboxes[i].value);
+            }
+        }
+        if(selected.length > 0) {
+            var form = document.createElement('form');
+            form.method = 'post';
+            form.action = '/delete_multiple';
+            for(var j=0; j<selected.length; j++) {
+                var input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = 'paths';
+                input.value = selected[j];
+                form.appendChild(input);
+            }
+            document.body.appendChild(form);
+            form.submit();
+        }
+    }
+    </script>
+    '''
+    
     return render_template_string(
-        "<h1>Contenido de {{path}}</h1>{{toggle|safe}}<ul>{{links|safe}}</ul>{{upload|safe}}",
-        path=req_path or "/", links="".join(file_links), upload=upload_form, toggle=toggle_button
+        "<h1>Contenido de {{path}}</h1>{{toggle|safe}}{{selection|safe}}<ul>{{links|safe}}</ul>{{upload|safe}}{{script|safe}}",
+        path=req_path or "/", links="".join(file_links), upload=upload_form, toggle=toggle_button, selection=selection_buttons, script=script
     )
 
 @app.route("/delete", methods=["POST"])
@@ -92,6 +161,19 @@ def delete_file():
             shutil.rmtree(abs_path)
     return redirect(url_for("dir_listing", req_path=os.path.dirname(rel_path)))
 
+@app.route("/delete_multiple", methods=["POST"])
+def delete_multiple():
+    paths = request.form.getlist("paths")
+    for rel_path in paths:
+        abs_path = os.path.join(BASE_DIR, rel_path)
+        if os.path.exists(abs_path):
+            if os.path.isfile(abs_path):
+                os.remove(abs_path)
+            elif os.path.isdir(abs_path):
+                import shutil
+                shutil.rmtree(abs_path)
+    return redirect(url_for("dir_listing", req_path=""))
+
 @app.route("/upload", methods=["POST"])
 def upload_file():
     files = request.files.getlist("file")
@@ -103,9 +185,67 @@ def upload_file():
             file.save(save_path)
     return redirect(url_for("dir_listing", req_path=""))
 
+@app.route("/save_json", methods=["POST"])
+def save_json():
+    data_json = request.form.get("data")
+    filename = request.form.get("filename")
+    if data_json and filename:
+        data = json.loads(data_json)
+        safe_name = neko_instance.clean_name(filename)
+        json_path = os.path.join(BASE_DIR, f"{safe_name}.json")
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return redirect(url_for("nekotools", result=f"JSON guardado: {safe_name}.json"))
+    return redirect(url_for("nekotools"))
+
+@app.route("/save_txt", methods=["POST"])
+def save_txt():
+    links_json = request.form.get("links")
+    filename = request.form.get("filename")
+    if links_json and filename:
+        links = json.loads(links_json)
+        safe_name = neko_instance.clean_name(filename)
+        txt_path = os.path.join(BASE_DIR, f"{safe_name}.txt")
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            for link in links:
+                f.write(f"{link}\n")
+        return redirect(url_for("nekotools", result=f"TXT guardado: {safe_name}.txt"))
+    return redirect(url_for("nekotools"))
+
+@app.route("/create_pdf_from_data", methods=["POST"])
+def create_pdf_from_data():
+    links_json = request.form.get("links")
+    filename = request.form.get("filename")
+    if links_json and filename:
+        links = json.loads(links_json)
+        safe_name = neko_instance.clean_name(filename)
+        pdf_path = os.path.join(BASE_DIR, f"{safe_name}.pdf")
+        result = neko_instance.create_pdf(pdf_path, links)
+        if result:
+            return redirect(url_for("nekotools", result=f"PDF creado: {safe_name}.pdf"))
+    return redirect(url_for("nekotools"))
+
+@app.route("/create_cbz_from_data", methods=["POST"])
+def create_cbz_from_data():
+    links_json = request.form.get("links")
+    filename = request.form.get("filename")
+    if links_json and filename:
+        links = json.loads(links_json)
+        safe_name = neko_instance.clean_name(filename)
+        cbz_path = os.path.join(BASE_DIR, f"{safe_name}.cbz")
+        result = neko_instance.create_cbz(cbz_path, links)
+        if result:
+            return redirect(url_for("nekotools", result=f"CBZ creado: {safe_name}.cbz"))
+    return redirect(url_for("nekotools"))
+
 @app.route("/nekotools", methods=["GET", "POST"])
 def nekotools():
-    result_text = ""
+    result_text = request.args.get("result", "")
+    saved_data = None
+    saved_links = None
+    saved_title = None
+    saved_code = None
+    
     if request.method == "POST":
         action = request.form.get("action")
         
@@ -129,21 +269,10 @@ def nekotools():
                 result = neko_instance.vnh(code)
                 result_text = json.dumps(result, indent=2, ensure_ascii=False)
                 if isinstance(result, dict) and "code" in result:
-                    base_name = f"{result.get('title', 'unknown')} - {result.get('code', 'unknown')}"
-                    safe_name = neko_instance.clean_name(base_name)
-                    json_path = os.path.join(BASE_DIR, f"{safe_name}.json")
-                    txt_path = os.path.join(BASE_DIR, f"{safe_name}.txt")
-                    
-                    with open(json_path, 'w', encoding='utf-8') as f:
-                        json.dump(result, f, indent=2, ensure_ascii=False)
-                    
-                    if "image_links" in result and isinstance(result["image_links"], list):
-                        with open(txt_path, 'w', encoding='utf-8') as f:
-                            for link in result["image_links"]:
-                                f.write(f"{link}\n")
-                    
-                    result_text += f"\n\n✅ JSON guardado: {safe_name}.json"
-                    result_text += f"\n✅ TXT guardado: {safe_name}.txt"
+                    saved_data = json.dumps(result)
+                    saved_links = json.dumps(result.get("image_links", []))
+                    saved_title = result.get('title', 'unknown')
+                    saved_code = result.get('code', 'unknown')
         
         elif action == "v3h":
             code = request.form.get("v3h_code", "").strip()
@@ -151,21 +280,10 @@ def nekotools():
                 result = neko_instance.v3h(code)
                 result_text = json.dumps(result, indent=2, ensure_ascii=False)
                 if isinstance(result, dict) and "code" in result:
-                    base_name = f"{result.get('title', 'unknown')} - {result.get('code', 'unknown')}"
-                    safe_name = neko_instance.clean_name(base_name)
-                    json_path = os.path.join(BASE_DIR, f"{safe_name}.json")
-                    txt_path = os.path.join(BASE_DIR, f"{safe_name}.txt")
-                    
-                    with open(json_path, 'w', encoding='utf-8') as f:
-                        json.dump(result, f, indent=2, ensure_ascii=False)
-                    
-                    if "image_links" in result and isinstance(result["image_links"], list):
-                        with open(txt_path, 'w', encoding='utf-8') as f:
-                            for link in result["image_links"]:
-                                f.write(f"{link}\n")
-                    
-                    result_text += f"\n\n✅ JSON guardado: {safe_name}.json"
-                    result_text += f"\n✅ TXT guardado: {safe_name}.txt"
+                    saved_data = json.dumps(result)
+                    saved_links = json.dumps(result.get("image_links", []))
+                    saved_title = result.get('title', 'unknown')
+                    saved_code = result.get('code', 'unknown')
         
         elif action == "download":
             url = request.form.get("download_url", "").strip()
@@ -175,9 +293,9 @@ def nekotools():
                 save_path = os.path.join(BASE_DIR, safe_filename)
                 success = neko_instance.download(url, save_path)
                 if success:
-                    result_text = f"✅ Descarga exitosa: {safe_filename}"
+                    result_text = f"Descarga exitosa: {safe_filename}"
                 else:
-                    result_text = "❌ Error en la descarga"
+                    result_text = "Error en la descarga"
         
         elif action == "convert_png":
             files = request.files.getlist("file")
@@ -196,9 +314,9 @@ def nekotools():
                 lista = [item.strip() for item in lista_text.split("\n") if item.strip()]
                 result = neko_instance.create_cbz(nombre, lista)
                 if result and os.path.exists(result):
-                    result_text = f"✅ CBZ creado: {result}"
+                    result_text = f"CBZ creado: {result}"
                 else:
-                    result_text = "❌ Error al crear CBZ"
+                    result_text = "Error al crear CBZ"
         
         elif action == "create_pdf":
             nombre = request.form.get("pdf_name", "").strip()
@@ -207,9 +325,9 @@ def nekotools():
                 lista = [item.strip() for item in lista_text.split("\n") if item.strip()]
                 result = neko_instance.create_pdf(nombre, lista)
                 if result and os.path.exists(result):
-                    result_text = f"✅ PDF creado: {result}"
+                    result_text = f"PDF creado: {result}"
                 else:
-                    result_text = "❌ Error al crear PDF"
+                    result_text = "Error al crear PDF"
         
         elif action == "download_from_json":
             json_file = request.files.get("json_file")
@@ -234,11 +352,11 @@ def nekotools():
                             if neko_instance.download(link, file_path):
                                 success_count += 1
                         
-                        result_text = f"✅ Descargadas {success_count}/{total_count} imágenes en: {safe_name}/"
+                        result_text = f"Descargadas {success_count}/{total_count} imagenes en: {safe_name}/"
                     else:
-                        result_text = "❌ JSON no tiene el formato esperado"
+                        result_text = "JSON no tiene el formato esperado"
                 except Exception as e:
-                    result_text = f"❌ Error al procesar JSON: {str(e)}"
+                    result_text = f"Error al procesar JSON: {str(e)}"
         
         elif action == "download_from_txt":
             txt_file = request.files.get("txt_file")
@@ -264,9 +382,35 @@ def nekotools():
                         if neko_instance.download(link, file_path):
                             success_count += 1
                     
-                    result_text = f"✅ Descargadas {success_count}/{total_count} imágenes en: {safe_name}/"
+                    result_text = f"Descargadas {success_count}/{total_count} imagenes en: {safe_name}/"
                 except Exception as e:
-                    result_text = f"❌ Error al procesar TXT: {str(e)}"
+                    result_text = f"Error al procesar TXT: {str(e)}"
+    
+    save_buttons = ""
+    if saved_data and saved_links and saved_title and saved_code:
+        base_name = f"{saved_title} - {saved_code}"
+        save_buttons = f'''
+        <form method="post" action="/save_json" style="display:inline;">
+            <input type="hidden" name="data" value='{saved_data}'>
+            <input type="hidden" name="filename" value="{base_name}">
+            <button type="submit">Guardar JSON</button>
+        </form>
+        <form method="post" action="/save_txt" style="display:inline;">
+            <input type="hidden" name="links" value='{saved_links}'>
+            <input type="hidden" name="filename" value="{base_name}">
+            <button type="submit">Guardar TXT</button>
+        </form>
+        <form method="post" action="/create_pdf_from_data" style="display:inline;">
+            <input type="hidden" name="links" value='{saved_links}'>
+            <input type="hidden" name="filename" value="{base_name}">
+            <button type="submit">Guardar PDF</button>
+        </form>
+        <form method="post" action="/create_cbz_from_data" style="display:inline;">
+            <input type="hidden" name="links" value='{saved_links}'>
+            <input type="hidden" name="filename" value="{base_name}">
+            <button type="submit">Guardar CBZ</button>
+        </form>
+        '''
     
     html = '''
     <h1>NekoTools</h1>
@@ -275,7 +419,7 @@ def nekotools():
     <form method="post" enctype="multipart/form-data">
         <input type="file" name="json_file" accept=".json">
         <input type="hidden" name="action" value="download_from_json">
-        <button type="submit">Descargar imágenes desde JSON</button>
+        <button type="submit">Descargar imagenes desde JSON</button>
     </form>
     
     <h2>Descargar desde TXT</h2>
@@ -284,7 +428,7 @@ def nekotools():
         <br>
         Nombre de carpeta: <input type="text" name="txt_folder" placeholder="Nombre para la carpeta">
         <input type="hidden" name="action" value="download_from_txt">
-        <button type="submit">Descargar imágenes desde TXT</button>
+        <button type="submit">Descargar imagenes desde TXT</button>
     </form>
     
     <h2>Descargar Archivo</h2>
@@ -307,7 +451,7 @@ def nekotools():
     <form method="post">
         Nombre: <input type="text" name="cbz_name" placeholder="Nombre del archivo">
         <br>
-        Lista (URLs o paths, uno por línea):<br>
+        Lista (URLs o paths, uno por linea):<br>
         <textarea name="cbz_list" rows="5" cols="50"></textarea>
         <input type="hidden" name="action" value="create_cbz">
         <button type="submit">Crear CBZ</button>
@@ -317,7 +461,7 @@ def nekotools():
     <form method="post">
         Nombre: <input type="text" name="pdf_name" placeholder="Nombre del archivo">
         <br>
-        Lista (URLs o paths, uno por línea):<br>
+        Lista (URLs o paths, uno por linea):<br>
         <textarea name="pdf_list" rows="5" cols="50"></textarea>
         <input type="hidden" name="action" value="create_pdf">
         <button type="submit">Crear PDF</button>
@@ -325,40 +469,43 @@ def nekotools():
     
     <h2>Buscar en nhentai</h2>
     <form method="post">
-        Término: <input type="text" name="snh_search" placeholder="Término de búsqueda">
+        Termino: <input type="text" name="snh_search" placeholder="Termino de busqueda">
         <br>
-        Página: <input type="number" name="snh_page" value="1" min="1">
+        Pagina: <input type="number" name="snh_page" value="1" min="1">
         <input type="hidden" name="action" value="snh">
         <button type="submit">Buscar SNH</button>
     </form>
     
     <h2>Buscar en 3hentai</h2>
     <form method="post">
-        Término: <input type="text" name="s3h_search" placeholder="Término de búsqueda">
+        Termino: <input type="text" name="s3h_search" placeholder="Termino de busqueda">
         <br>
-        Página: <input type="number" name="s3h_page" value="1" min="1">
+        Pagina: <input type="number" name="s3h_page" value="1" min="1">
         <input type="hidden" name="action" value="s3h">
         <button type="submit">Buscar S3H</button>
     </form>
     
     <h2>Ver nhentai</h2>
     <form method="post">
-        Código: <input type="text" name="vnh_code" placeholder="Código del doujin">
+        Codigo: <input type="text" name="vnh_code" placeholder="Codigo del doujin">
         <input type="hidden" name="action" value="vnh">
         <button type="submit">Ver VNH</button>
     </form>
     
     <h2>Ver 3hentai</h2>
     <form method="post">
-        Código: <input type="text" name="v3h_code" placeholder="Código del doujin">
+        Codigo: <input type="text" name="v3h_code" placeholder="Codigo del doujin">
         <input type="hidden" name="action" value="v3h">
         <button type="submit">Ver V3H</button>
     </form>
     
+    <h2>Acciones:</h2>
+    {{save_buttons|safe}}
+    
     <h2>Resultado:</h2>
     <pre>{{result_text}}</pre>
     '''
-    return render_template_string(html, result_text=result_text)
+    return render_template_string(html, result_text=result_text, save_buttons=save_buttons)
 
 def run_flask():
     app.run(host="0.0.0.0", port=5000)
