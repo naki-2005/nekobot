@@ -1,14 +1,20 @@
 import os
 import json
+import threading
+import time
+import uuid
 from flask import Flask, request, redirect, url_for, send_file, render_template_string
 from werkzeug.utils import secure_filename
 from neko import Neko
 
 app = Flask(__name__)
+app.secret_key = 'clave-secreta-temp-123'
 BASE_DIR = os.path.join(os.getcwd(), "vault")
 os.makedirs(BASE_DIR, exist_ok=True)
 
 neko_instance = Neko()
+
+download_queues = {}
 
 def format_size(size_bytes):
     if size_bytes < 1024:
@@ -21,6 +27,74 @@ def format_size(size_bytes):
         return f"{size_mb:.2f} MB"
     size_gb = size_mb / 1024
     return f"{size_gb:.2f} GB"
+
+def split_codes(code_string):
+    if not code_string:
+        return []
+    import re
+    codes = re.split(r'[,\s;/]+', code_string)
+    return [c.strip() for c in codes if c.strip()]
+
+def process_download_queue(queue_id, codes, mode):
+    queue = download_queues[queue_id]
+    results = []
+    successful = 0
+    failed = 0
+    
+    for i, code in enumerate(codes):
+        if queue['status'] == 'cancelled':
+            break
+            
+        queue['current'] = i + 1
+        queue['current_code'] = code
+        
+        try:
+            if mode == 'vnh':
+                result = neko_instance.vnh(code)
+            else:
+                result = neko_instance.v3h(code)
+            
+            if result and isinstance(result, dict) and "code" in result:
+                base_name = f"{result.get('title', 'unknown')} - {result.get('code', 'unknown')}"
+                safe_name = neko_instance.clean_name(base_name)
+                
+                json_path = os.path.join(BASE_DIR, f"{safe_name}.json")
+                txt_path = os.path.join(BASE_DIR, f"{safe_name}.txt")
+                
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(result, f, indent=2, ensure_ascii=False)
+                
+                if "image_links" in result and isinstance(result["image_links"], list):
+                    with open(txt_path, 'w', encoding='utf-8') as f:
+                        for link in result["image_links"]:
+                            f.write(f"{link}\n")
+                    
+                    cbz_result = neko_instance.create_cbz(base_name, result["image_links"])
+                    pdf_result = neko_instance.create_pdf(base_name, result["image_links"])
+                    
+                    results.append({
+                        'code': code,
+                        'success': True,
+                        'title': result.get('title', 'unknown'),
+                        'cover': result.get('cover_image') or result["image_links"][0] if result["image_links"] else None
+                    })
+                    successful += 1
+                else:
+                    results.append({'code': code, 'success': False, 'error': 'No image_links'})
+                    failed += 1
+            else:
+                results.append({'code': code, 'success': False, 'error': 'Invalid response'})
+                failed += 1
+        except Exception as e:
+            results.append({'code': code, 'success': False, 'error': str(e)})
+            failed += 1
+        
+        time.sleep(1)
+    
+    queue['results'] = results
+    queue['successful'] = successful
+    queue['failed'] = failed
+    queue['status'] = 'completed'
 
 @app.route("/", defaults={"req_path": ""})
 @app.route("/<path:req_path>")
@@ -233,6 +307,74 @@ def upload_file():
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             file.save(save_path)
     return redirect(url_for("dir_listing", req_path=""))
+
+@app.route("/queue/<queue_id>")
+def view_queue(queue_id):
+    if queue_id not in download_queues:
+        return "Cola no encontrada", 404
+    
+    queue = download_queues[queue_id]
+    
+    if queue['status'] == 'completed':
+        html = render_template_string('''
+        <h1>Descarga Completada</h1>
+        <p>Total: {{ total }} codigos</p>
+        <p>Exitosos: {{ successful }} | Fallidos: {{ failed }}</p>
+        <h2>Resultados:</h2>
+        <ul>
+        {% for r in results %}
+            <li>
+                <b>{{ r.code }}</b> - {{ r.title if r.success else 'FALLIDO' }}
+                {% if r.success and r.cover %}
+                    <br><img src="{{ r.cover }}" style="max-width:100px;">
+                {% endif %}
+                {% if not r.success %}
+                    <br>Error: {{ r.error }}
+                {% endif %}
+            </li>
+        {% endfor %}
+        </ul>
+        <p><a href="/">Volver al inicio</a></p>
+        ''', total=queue['total'], successful=queue['successful'], failed=queue['failed'], results=queue['results'])
+        
+        del download_queues[queue_id]
+        return html
+    
+    return render_template_string('''
+    <h1>Procesando cola de descarga</h1>
+    <p>Progreso: {{ current }}/{{ total }}</p>
+    <p>Codigo actual: {{ current_code }}</p>
+    <p><a href="/queue/{{ queue_id }}">Actualizar</a></p>
+    ''', current=queue['current'], total=queue['total'], current_code=queue['current_code'], queue_id=queue_id)
+
+@app.route("/auto_download", methods=["POST"])
+def auto_download():
+    mode = request.form.get("mode")
+    codes_string = request.form.get("codes", "").strip()
+    
+    if not codes_string or not mode:
+        return redirect(url_for("nekotools"))
+    
+    codes = split_codes(codes_string)
+    if not codes:
+        return redirect(url_for("nekotools", result="No se encontraron codigos validos"))
+    
+    queue_id = str(uuid.uuid4())
+    download_queues[queue_id] = {
+        'status': 'processing',
+        'total': len(codes),
+        'current': 0,
+        'current_code': '',
+        'results': [],
+        'successful': 0,
+        'failed': 0
+    }
+    
+    thread = threading.Thread(target=process_download_queue, args=(queue_id, codes, mode))
+    thread.daemon = True
+    thread.start()
+    
+    return redirect(url_for('view_queue', queue_id=queue_id))
 
 @app.route("/save_json", methods=["POST"])
 def save_json():
@@ -461,6 +603,15 @@ def nekotools():
     
     html = '''
     <h1>NekoTools</h1>
+    
+    <h2>Descarga Automatica Multiple</h2>
+    <form method="post" action="/auto_download">
+        Codigos (separados por , ; espacio /):<br>
+        <input type="text" name="codes" size="50" placeholder="318156 318157 318158">
+        <br>
+        <button type="submit" name="mode" value="vnh">Auto Guardar (CBZ)</button>
+        <button type="submit" name="mode" value="v3h">Auto Guardar (PDF)</button>
+    </form>
     
     <h2>Descargar desde JSON</h2>
     <form method="post" enctype="multipart/form-data">
