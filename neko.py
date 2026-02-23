@@ -534,3 +534,24 @@ class Neko:
         except Exception as e:
             print(f"Error en reset_render_service: {e}")
             return False
+            
+    def scrap(self, link, texto):
+        try:
+            response = requests.get(link, timeout=30)
+            if response.status_code != 200:
+                return []
+            
+            html = response.text
+            coincidencias = []
+            
+            import re
+            patron_url = r'https?://[^\s"\'<>]+'
+            urls = re.findall(patron_url, html)
+            
+            for url in urls:
+                if texto.lower() in url.lower():
+                    coincidencias.append(url)
+            
+            return coincidencias
+        except Exception:
+            return []
