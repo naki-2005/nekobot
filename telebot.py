@@ -296,6 +296,50 @@ class NekoTelegram:
                 os.remove(temp_path)
                 return
             
+            import ffmpeg
+            import json
+            
+            thumb_path = None
+            duration = 0
+            width = 0
+            height = 0
+            
+            try:
+                probe = ffmpeg.probe(temp_path)
+                video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
+                
+                if video_stream:
+                    width = int(video_stream.get('width', 0))
+                    height = int(video_stream.get('height', 0))
+                
+                duration = float(probe['format'].get('duration', 0))
+                
+                thumb_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                thumb_path = thumb_file.name
+                thumb_file.close()
+                
+                (
+                    ffmpeg
+                    .input(temp_path, ss=1)
+                    .filter('scale', 320, -1)
+                    .output(thumb_path, vframes=1)
+                    .run(quiet=True, overwrite_output=True)
+                )
+                
+                if os.path.getsize(thumb_path) > 200 * 1024:
+                    (
+                        ffmpeg
+                        .input(thumb_path)
+                        .filter('scale', 320, -1)
+                        .output(thumb_path + '_small.jpg', q=10)
+                        .run(quiet=True, overwrite_output=True)
+                    )
+                    os.remove(thumb_path)
+                    thumb_path = thumb_path + '_small.jpg'
+            
+            except Exception as e:
+                print(f"Error obteniendo metadata: {e}")
+            
             file_size_mb = os.path.getsize(temp_path) / (1024 * 1024)
             
             await safe_call(progress_msg.delete)
@@ -310,13 +354,20 @@ class NekoTelegram:
                 await safe_call(
                     message.reply_video,
                     video=temp_path,
-                    caption=f"🎬 Video descargado"
+                    caption=f"🎬 Video descargado",
+                    duration=int(duration),
+                    width=width,
+                    height=height,
+                    thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None
                 )
-                os.remove(temp_path)
+                
+                if thumb_path and os.path.exists(thumb_path):
+                    os.remove(thumb_path)
+            
+            os.remove(temp_path)
         
         except Exception as e:
-            await safe_call(message.reply_text, f"❌ Error descargando video: {str(e)}")
-    
+            await safe_call(message.reply_text, f"❌ Error descargando video: {str(e)}")    
     async def async_download(self, url, save_path):
         try:
             async with aiohttp.ClientSession() as session:
