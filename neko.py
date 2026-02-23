@@ -534,7 +534,8 @@ class Neko:
         except Exception as e:
             print(f"Error en reset_render_service: {e}")
             return False
-            
+
+        
     def scrap(self, link, texto):
         try:
             response = requests.get(link, timeout=30)
@@ -543,13 +544,15 @@ class Neko:
             
             html = response.text
             coincidencias = []
+            urls_vistas = set()
             
             import re
             patron_url = r'https?://[^\s"\'<>]+'
             urls = re.findall(patron_url, html)
             
             for url in urls:
-                if texto.lower() in url.lower():
+                if texto.lower() in url.lower() and url not in urls_vistas:
+                    urls_vistas.add(url)
                     coincidencias.append(url)
             
             return coincidencias
