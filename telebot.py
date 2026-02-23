@@ -261,7 +261,62 @@ class NekoTelegram:
             except Exception as e2:
                 print(f"❌ Error en reintento: {e2}")
                 raise
-                
+
+    async def scrap(self, message, link, texto_buscar):
+        try:
+            progress_msg = await safe_call(message.reply_text, f"🔍 Escaneando {link}...")
+            
+            resultados = self.neko.scrap(link, texto_buscar)
+            
+            if not resultados:
+                await safe_call(progress_msg.edit_text, f"❌ No se encontraron coincidencias para '{texto_buscar}'")
+                return
+            
+            await safe_call(progress_msg.delete)
+            
+            for url in resultados:
+                await safe_call(message.reply_text, url)
+                await asyncio.sleep(0.2)
+        
+        except Exception as e:
+            await safe_call(message.reply_text, f"❌ Error en scrap: {str(e)}")
+    
+    async def dlvid(self, message, video_link):
+        try:
+            progress_msg = await safe_call(message.reply_text, "📥 Descargando video...")
+            
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            temp_path = temp_file.name
+            temp_file.close()
+            
+            success = await self.async_download(video_link, temp_path)
+            
+            if not success or os.path.getsize(temp_path) == 0:
+                await safe_call(progress_msg.edit_text, "❌ Error al descargar el video")
+                os.remove(temp_path)
+                return
+            
+            file_size_mb = os.path.getsize(temp_path) / (1024 * 1024)
+            
+            await safe_call(progress_msg.delete)
+            
+            if file_size_mb > 50:
+                await self._send_document_with_progress(
+                    message.chat.id,
+                    temp_path,
+                    caption=f"🎬 Video: {os.path.basename(video_link)}"
+                )
+            else:
+                await safe_call(
+                    message.reply_video,
+                    video=temp_path,
+                    caption=f"🎬 Video descargado"
+                )
+                os.remove(temp_path)
+        
+        except Exception as e:
+            await safe_call(message.reply_text, f"❌ Error descargando video: {str(e)}")
+    
     async def async_download(self, url, save_path):
         try:
             async with aiohttp.ClientSession() as session:
@@ -327,7 +382,10 @@ class NekoTelegram:
             BotCommand("nyaa18", "Buscar en Sukebei (Nyaa 18+)"),
             BotCommand("leech", "Descargar torrent/magnet"),
             BotCommand("mega", "Descargar archivo de MEGA"),
-            BotCommand("reset", "Reiniciar servicio Render (ServiceID BearerToken)")
+            BotCommand("reset", "Reiniciar servicio Render (ServiceID BearerToken)"),
+            BotCommand("scrap", "Scrapea una pagina y busca coincidencias"),
+            BotCommand("dlvid", "Descarga y envia un video"),
+            
         ])
         print("Comandos configurados en el bot")
 
@@ -367,6 +425,50 @@ class NekoTelegram:
                 message_text += f"\n\n... y {len(files_list) - 50} archivos más"
             
             await safe_call(message.reply_text, message_text)
+            return
+
+        elif text.startswith("/scrap "):
+            parts = text.split(maxsplit=2)
+            if len(parts) < 3:
+                await safe_call(message.reply_text, "Usa: `/scrap link texto_a_buscar`")
+                return
+            
+            link = parts[1].strip()
+            texto_buscar = parts[2].strip()
+            
+            await self.scrap(message, link, texto_buscar)
+            return
+        
+        elif text.startswith("/dlvid "):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "Usa: `/dlvid link_de_video`")
+                return
+            
+            video_link = parts[1].strip()
+            await self.dlvid(message, video_link)
+            return
+
+        elif text.startswith("/scrap "):
+            parts = text.split(maxsplit=2)
+            if len(parts) < 3:
+                await safe_call(message.reply_text, "Usa: `/scrap link texto_a_buscar`")
+                return
+            
+            link = parts[1].strip()
+            texto_buscar = parts[2].strip()
+            
+            await self.scrap(message, link, texto_buscar)
+            return
+        
+        elif text.startswith("/dlvid "):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "Usa: `/dlvid link_de_video`")
+                return
+            
+            video_link = parts[1].strip()
+            await self.dlvid(message, video_link)
             return
         
         elif text.startswith("/sendfile "):
