@@ -479,7 +479,7 @@ class NekoTelegram:
             return
 
         elif text.startswith("/start"):
-            await safe_call(message.reply_photo, photo="https://cdn.imgchest.com/files/93cb097b575e.webp", protect_content=True, caption="Nyaa, Hello, I'm Alice. The cute pet of @nakigeplayer")
+            await safe_call(client.send_photo, chat_id=message.chat.id, photo="https://cdn.imgchest.com/files/93cb097b575e.webp", protect_content=True, caption="Nyaa, Hello, I'm Alice. The cute pet of @nakigeplayer")
             return
 
         elif text.startswith("/code"):
