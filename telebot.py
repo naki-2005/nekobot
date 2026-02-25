@@ -478,6 +478,14 @@ class NekoTelegram:
             await safe_call(message.reply_text, message_text)
             return
 
+        elif text.startswith("/start"):
+            await safe_call(message.send_photo, photo="https://cdn.imgchest.com/files/93cb097b575e.webp", chat_id=message.chat.id, protect_content=True, caption="Nyaa, Hello, I'm Alice. The cute pet of @nakigeplayer")
+            return
+
+        elif text.startswith("/code"):
+            await safe_call(message.reply_text, disable_web_page_preview=True, "Code of bot: https://github.com/naki-2005/nekobot/")
+            return
+
         elif text.startswith("/scrap "):
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
