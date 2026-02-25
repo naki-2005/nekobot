@@ -483,7 +483,7 @@ class NekoTelegram:
             return
 
         elif text.startswith("/code"):
-            await safe_call(message.reply_text, disable_web_page_preview=True, "Code of bot: https://github.com/naki-2005/nekobot/")
+            await safe_call(message.reply_text, disable_web_page_preview=True, text="Code of bot: https://github.com/naki-2005/nekobot/")
             return
 
         elif text.startswith("/scrap "):
