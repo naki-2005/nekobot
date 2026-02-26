@@ -584,7 +584,7 @@ class NekoTelegram:
         elif text.startswith("/setfile "):
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
-                current = user_settings.get(user_id, "raw")
+                current = user_settings.get(user_id, "cbz")
                 await safe_call(message.reply_text, f"Formato actual: **{current.upper()}**\nUsa: `/setfile cbz` o `/setfile pdf` o `/setfile raw`")
                 return
             
@@ -828,7 +828,7 @@ class NekoTelegram:
                     await safe_call(message.reply_text, "Formato -p inválido")
                     return
             
-            format_choice = user_settings.get(user_id, "raw")
+            format_choice = user_settings.get(user_id, "cbz")
             result = self.neko.vnh(code) if command == "/nh" else self.neko.v3h(code)
             
             if single_page:
