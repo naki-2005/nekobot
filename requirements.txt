@@ -10,4 +10,4 @@ TgCrypto
 bencodepy
 libtorrent==2.0.11
 python-ffmpeg
-selenium
+selenium==4.15.0
