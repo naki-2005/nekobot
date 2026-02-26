@@ -7,6 +7,7 @@ import random
 import json
 import base64
 import io
+import os
 from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
