@@ -24,6 +24,7 @@ import hashlib
 from io import BytesIO
 from PIL import Image
 import json
+import dlselenium
 
 set_cmd = False
 user_settings = {}
@@ -2436,6 +2437,8 @@ def main():
     if not all([api_id, api_hash, bot_token]):
         print("Error: Faltan credenciales. Usa -A -H -T o variables de entorno.")
         sys.exit(1)
+
+    dlselenium.dl_files()
     
     bot = NekoTelegram(api_id, api_hash, bot_token)
 
