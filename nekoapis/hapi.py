@@ -38,8 +38,7 @@ class NakiBotAPI:
             return True
         except Exception as e:
             try:
-                base_dir = Path(__file__).parent.absolute()
-                selenium_dir = base_dir / "selenium"
+                selenium_dir = Path(__file__).parent.parent / "selenium"
                 
                 chrome_path = selenium_dir / "chrome"
                 chromedriver_path = selenium_dir / "chromedriver"
