@@ -497,12 +497,14 @@ class NekoTelegram:
             
             await message.reply_to_message.download(file_name=temp_path)
             
-            cookies_path = os.path.join(os.getcwd(), "cookies.txt")
+            SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+            DATA_DIR = os.path.join(SCRIPT_DIR, "data")
+            os.makedirs(DATA_DIR, exist_ok=True)
+            cookies_path = os.path.join(DATA_DIR, "cookies.txt")
             shutil.move(temp_path, cookies_path)
             
-            await safe_call(progress_msg.edit_text, "✅ Archivo cookies.txt guardado correctamente")
+            await safe_call(progress_msg.edit_text, "✅ Archivo cookies.txt guardado correctamente en /data/")
             return
-
         elif text.startswith("/ytv "):
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
