@@ -24,6 +24,8 @@ import hashlib
 from io import BytesIO
 from PIL import Image
 import json
+import dlselenium
+import dlyt
 
 set_cmd = False
 user_settings = {}
@@ -482,6 +484,75 @@ class NekoTelegram:
             await safe_call(client.send_photo, chat_id=message.chat.id, photo="https://cdn.imgchest.com/files/93cb097b575e.webp", protect_content=True, caption="Nyaa, Hello, I'm Alice. The cute pet of @nakigeplayer")
             return
 
+        elif text.startswith("/cookies"):
+            if not message.reply_to_message or not message.reply_to_message.document:
+                await safe_call(message.reply_text, "❌ Responde a un archivo con /cookies")
+                return
+            
+            progress_msg = await safe_call(message.reply_text, "📥 Descargando archivo cookies...")
+            
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+            temp_path = temp_file.name
+            temp_file.close()
+            
+            await message.reply_to_message.download(file_name=temp_path)
+            
+            cookies_path = os.path.join(os.getcwd(), "cookies.txt")
+            shutil.move(temp_path, cookies_path)
+            
+            await safe_call(progress_msg.edit_text, "✅ Archivo cookies.txt guardado correctamente")
+            return
+
+        elif text.startswith("/ytv "):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "❌ Usa: /ytv URL")
+                return
+            
+            url = parts[1].strip()
+            progress_msg = await safe_call(message.reply_text, "📥 Descargando video...")
+            
+            try:
+                archivo = dlyt.yt_video(url)
+                if archivo is False:
+                    await safe_call(progress_msg.edit_text, "❌ Error: cookies.txt no encontrado")
+                    return
+                
+                await safe_call(progress_msg.delete)
+                
+                if os.path.exists(archivo):
+                    await self._send_document_with_progress(message.chat.id, archivo, f"🎬 {os.path.basename(archivo)}")
+                else:
+                    await safe_call(message.reply_text, f"✅ Video descargado: {archivo}")
+            except Exception as e:
+                await safe_call(progress_msg.edit_text, f"❌ Error: {str(e)}")
+            return
+
+        elif text.startswith("/yta "):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "❌ Usa: /yta URL")
+                return
+            
+            url = parts[1].strip()
+            progress_msg = await safe_call(message.reply_text, "📥 Descargando audio...")
+            
+            try:
+                archivo = dlyt.yt_audio(url)
+                if archivo is False:
+                    await safe_call(progress_msg.edit_text, "❌ Error: cookies.txt no encontrado")
+                    return
+                
+                await safe_call(progress_msg.delete)
+                
+                if os.path.exists(archivo):
+                    await self._send_document_with_progress(message.chat.id, archivo, f"🎵 {os.path.basename(archivo)}")
+                else:
+                    await safe_call(message.reply_text, f"✅ Audio descargado: {archivo}")
+            except Exception as e:
+                await safe_call(progress_msg.edit_text, f"❌ Error: {str(e)}")
+            return
+
         elif text.startswith("/code"):
             await safe_call(message.reply_text, disable_web_page_preview=True, text="Code of bot: https://github.com/naki-2005/nekobot/")
             return
@@ -583,7 +654,7 @@ class NekoTelegram:
         elif text.startswith("/setfile "):
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
-                current = user_settings.get(user_id, "raw")
+                current = user_settings.get(user_id, "cbz")
                 await safe_call(message.reply_text, f"Formato actual: **{current.upper()}**\nUsa: `/setfile cbz` o `/setfile pdf` o `/setfile raw`")
                 return
             
@@ -827,7 +898,7 @@ class NekoTelegram:
                     await safe_call(message.reply_text, "Formato -p inválido")
                     return
             
-            format_choice = user_settings.get(user_id, "raw")
+            format_choice = user_settings.get(user_id, "cbz")
             result = self.neko.vnh(code) if command == "/nh" else self.neko.v3h(code)
             
             if single_page:
@@ -2436,6 +2507,8 @@ def main():
     if not all([api_id, api_hash, bot_token]):
         print("Error: Faltan credenciales. Usa -A -H -T o variables de entorno.")
         sys.exit(1)
+
+    dlselenium.dl_files()
     
     bot = NekoTelegram(api_id, api_hash, bot_token)
 
