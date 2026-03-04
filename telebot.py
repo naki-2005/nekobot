@@ -26,6 +26,7 @@ from PIL import Image
 import json
 import dlselenium
 import dlyt
+import uuid
 
 set_cmd = False
 user_settings = {}
@@ -85,13 +86,13 @@ class NekoTelegram:
                 return
             
             action = parts[1]
-            cache_key = parts[2]
+            cache_id = parts[2]
             
-            if cache_key not in self.user_downloads:
+            if cache_id not in self.user_downloads:
                 await callback_query.answer("❌ Enlace expirado, descarga de nuevo", show_alert=True)
                 return
             
-            link = self.user_downloads[cache_key]
+            link = self.user_downloads[cache_id]
             
             await callback_query.answer(f"Enviando como {action}...")
             await callback_query.message.delete()
@@ -307,28 +308,29 @@ class NekoTelegram:
         try:
             progress_msg = await safe_call(message.reply_text, "📥 Procesando enlace...")
             
-            cache_key = f"{message.from_user.id}_{link}"
-            self.user_downloads[cache_key] = link
+            cache_id = str(uuid.uuid4())[:8]
+            self.user_downloads[cache_id] = link
             
             buttons = [
                 [
-                    InlineKeyboardButton("🖼️ Imagen", callback_data=f"dl_image_{cache_key}"),
-                    InlineKeyboardButton("🎬 Video", callback_data=f"dl_video_{cache_key}")
+                    InlineKeyboardButton("🖼️ Imagen", callback_data=f"dl_image_{cache_id}"),
+                    InlineKeyboardButton("🎬 Video", callback_data=f"dl_video_{cache_id}")
                 ],
                 [
-                    InlineKeyboardButton("🎵 Audio", callback_data=f"dl_audio_{cache_key}"),
-                    InlineKeyboardButton("📄 Documento", callback_data=f"dl_document_{cache_key}")
+                    InlineKeyboardButton("🎵 Audio", callback_data=f"dl_audio_{cache_id}"),
+                    InlineKeyboardButton("📄 Documento", callback_data=f"dl_document_{cache_id}")
                 ]
             ]
             
             await safe_call(progress_msg.edit_text, 
-                f"📌 Enlace guardado: {link}\n\nElige el formato de envío:",
+                f"📌 Enlace guardado\n\nElige el formato de envío:",
                 reply_markup=InlineKeyboardMarkup(buttons))
             
         except Exception as e:
             await safe_call(message.reply_text, f"❌ Error: {str(e)}")
     
     async def _send_as_format(self, chat_id, link, format_type):
+        temp_path = None
         try:
             temp_file = tempfile.NamedTemporaryFile(delete=False)
             temp_path = temp_file.name
@@ -338,10 +340,9 @@ class NekoTelegram:
             
             if not success or os.path.getsize(temp_path) == 0:
                 await safe_call(self.app.send_message, chat_id, "❌ Error al descargar el contenido")
-                os.remove(temp_path)
+                if temp_path and os.path.exists(temp_path):
+                    os.remove(temp_path)
                 return
-            
-            file_size_mb = os.path.getsize(temp_path) / (1024 * 1024)
             
             if format_type == "image":
                 try:
@@ -364,14 +365,16 @@ class NekoTelegram:
                     await safe_call(self.app.send_message, chat_id, "❌ El archivo no es un audio válido")
             
             elif format_type == "document":
-                await self._send_document_with_progress(chat_id, temp_path, f"📄 {os.path.basename(link)}")
-            
-            os.remove(temp_path)
+                await self._send_document_with_progress(chat_id, temp_path, f"📄 Archivo")
             
         except Exception as e:
             await safe_call(self.app.send_message, chat_id, f"❌ Error al enviar: {str(e)}")
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
     
     async def async_download(self, url, save_path):
         try:
