@@ -79,6 +79,26 @@ class NekoTelegram:
         data = callback_query.data
         user_id = callback_query.from_user.id
         
+        if data.startswith("dl_"):
+            parts = data.split("_", 2)
+            if len(parts) < 3:
+                return
+            
+            action = parts[1]
+            cache_key = parts[2]
+            
+            if cache_key not in self.user_downloads:
+                await callback_query.answer("❌ Enlace expirado, descarga de nuevo", show_alert=True)
+                return
+            
+            link = self.user_downloads[cache_key]
+            
+            await callback_query.answer(f"Enviando como {action}...")
+            await callback_query.message.delete()
+            
+            await self._send_as_format(callback_query.message.chat.id, link, action)
+            return
+        
         if data.startswith("auto_"):
             action = data[5:]
             if action == "info":
@@ -283,93 +303,76 @@ class NekoTelegram:
         except Exception as e:
             await safe_call(message.reply_text, f"❌ Error en scrap: {str(e)}")
     
-    async def dlvid(self, message, video_link):
+    async def dl(self, message, link):
         try:
-            progress_msg = await safe_call(message.reply_text, "📥 Descargando video...")
+            progress_msg = await safe_call(message.reply_text, "📥 Procesando enlace...")
             
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            cache_key = f"{message.from_user.id}_{link}"
+            self.user_downloads[cache_key] = link
+            
+            buttons = [
+                [
+                    InlineKeyboardButton("🖼️ Imagen", callback_data=f"dl_image_{cache_key}"),
+                    InlineKeyboardButton("🎬 Video", callback_data=f"dl_video_{cache_key}")
+                ],
+                [
+                    InlineKeyboardButton("🎵 Audio", callback_data=f"dl_audio_{cache_key}"),
+                    InlineKeyboardButton("📄 Documento", callback_data=f"dl_document_{cache_key}")
+                ]
+            ]
+            
+            await safe_call(progress_msg.edit_text, 
+                f"📌 Enlace guardado: {link}\n\nElige el formato de envío:",
+                reply_markup=InlineKeyboardMarkup(buttons))
+            
+        except Exception as e:
+            await safe_call(message.reply_text, f"❌ Error: {str(e)}")
+    
+    async def _send_as_format(self, chat_id, link, format_type):
+        try:
+            temp_file = tempfile.NamedTemporaryFile(delete=False)
             temp_path = temp_file.name
             temp_file.close()
             
-            success = await self.async_download(video_link, temp_path)
+            success = await self.async_download(link, temp_path)
             
             if not success or os.path.getsize(temp_path) == 0:
-                await safe_call(progress_msg.edit_text, "❌ Error al descargar el video")
+                await safe_call(self.app.send_message, chat_id, "❌ Error al descargar el contenido")
                 os.remove(temp_path)
                 return
             
-            import ffmpeg
-            import json
-            
-            thumb_path = None
-            duration = 0
-            width = 0
-            height = 0
-            
-            try:
-                probe = ffmpeg.probe(temp_path)
-                video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
-                
-                if video_stream:
-                    width = int(video_stream.get('width', 0))
-                    height = int(video_stream.get('height', 0))
-                
-                duration = float(probe['format'].get('duration', 0))
-                
-                thumb_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-                thumb_path = thumb_file.name
-                thumb_file.close()
-                
-                (
-                    ffmpeg
-                    .input(temp_path, ss=1)
-                    .filter('scale', 320, -1)
-                    .output(thumb_path, vframes=1)
-                    .run(quiet=True, overwrite_output=True)
-                )
-                
-                if os.path.getsize(thumb_path) > 200 * 1024:
-                    (
-                        ffmpeg
-                        .input(thumb_path)
-                        .filter('scale', 320, -1)
-                        .output(thumb_path + '_small.jpg', q=10)
-                        .run(quiet=True, overwrite_output=True)
-                    )
-                    os.remove(thumb_path)
-                    thumb_path = thumb_path + '_small.jpg'
-            
-            except Exception as e:
-                print(f"Error obteniendo metadata: {e}")
-            
             file_size_mb = os.path.getsize(temp_path) / (1024 * 1024)
             
-            await safe_call(progress_msg.delete)
+            if format_type == "image":
+                try:
+                    img = Image.open(temp_path)
+                    img.verify()
+                    await safe_call(self.app.send_photo, chat_id, temp_path)
+                except:
+                    await safe_call(self.app.send_message, chat_id, "❌ El archivo no es una imagen válida")
             
-            if file_size_mb > 50:
-                await self._send_document_with_progress(
-                    message.chat.id,
-                    temp_path,
-                    caption=f"🎬 Video: {os.path.basename(video_link)}"
-                )
-            else:
-                await safe_call(
-                    message.reply_video,
-                    video=temp_path,
-                    caption=f"🎬 Video descargado",
-                    duration=int(duration),
-                    width=width,
-                    height=height,
-                    thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None
-                )
-                
-                if thumb_path and os.path.exists(thumb_path):
-                    os.remove(thumb_path)
+            elif format_type == "video":
+                try:
+                    await safe_call(self.app.send_video, chat_id, temp_path)
+                except:
+                    await safe_call(self.app.send_message, chat_id, "❌ El archivo no es un video válido")
+            
+            elif format_type == "audio":
+                try:
+                    await safe_call(self.app.send_audio, chat_id, temp_path)
+                except:
+                    await safe_call(self.app.send_message, chat_id, "❌ El archivo no es un audio válido")
+            
+            elif format_type == "document":
+                await self._send_document_with_progress(chat_id, temp_path, f"📄 {os.path.basename(link)}")
             
             os.remove(temp_path)
-        
+            
         except Exception as e:
-            await safe_call(message.reply_text, f"❌ Error descargando video: {str(e)}")    
+            await safe_call(self.app.send_message, chat_id, f"❌ Error al enviar: {str(e)}")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+    
     async def async_download(self, url, save_path):
         try:
             async with aiohttp.ClientSession() as session:
@@ -437,8 +440,7 @@ class NekoTelegram:
             BotCommand("mega", "Descargar archivo de MEGA"),
             BotCommand("reset", "Reiniciar servicio Render (ServiceID BearerToken)"),
             BotCommand("scrap", "Scrapea una pagina y busca coincidencias"),
-            BotCommand("dlvid", "Descarga y envia un video"),
-            
+            BotCommand("dl", "Descarga un enlace y elige formato: Imagen/Video/Audio/Documento")
         ])
         print("Comandos configurados en el bot")
 
@@ -571,38 +573,16 @@ class NekoTelegram:
             await self.scrap(message, link, texto_buscar)
             return
         
-        elif text.startswith("/dlvid "):
+        elif text.startswith("/dl "):
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
-                await safe_call(message.reply_text, "Usa: `/dlvid link_de_video`")
-                return
-            
-            video_link = parts[1].strip()
-            await self.dlvid(message, video_link)
-            return
-
-        elif text.startswith("/scrap "):
-            parts = text.split(maxsplit=2)
-            if len(parts) < 3:
-                await safe_call(message.reply_text, "Usa: `/scrap link texto_a_buscar`")
+                await safe_call(message.reply_text, "Usa: `/dl link`")
                 return
             
             link = parts[1].strip()
-            texto_buscar = parts[2].strip()
-            
-            await self.scrap(message, link, texto_buscar)
+            await self.dl(message, link)
             return
-        
-        elif text.startswith("/dlvid "):
-            parts = text.split(maxsplit=1)
-            if len(parts) < 2:
-                await safe_call(message.reply_text, "Usa: `/dlvid link_de_video`")
-                return
-            
-            video_link = parts[1].strip()
-            await self.dlvid(message, video_link)
-            return
-        
+
         elif text.startswith("/sendfile "):
             parts = text.split()
             if len(parts) != 2:
