@@ -631,8 +631,19 @@ def search_results():
         results_data = json.loads(results_json)
         resultados = results_data.get("resultados", [])
         total_resultados = results_data.get("total_resultados", 0)
-        total_paginas = results_data.get("total_paginas", 0)
+        total_paginas = results_data.get("total_paginas", 1)
         pagina_actual = results_data.get("pagina_actual", 1)
+        
+        if not resultados:
+            return f'''
+            <html>
+            <head><title>Sin resultados</title></head>
+            <body>
+                <h1>No se encontraron resultados para "{search_term}"</h1>
+                <p><a href="/nekotools">Volver a NekoTools</a></p>
+            </body>
+            </html>
+            '''
         
         html = f'''
         <!DOCTYPE html>
@@ -781,9 +792,9 @@ def search_results():
         '''
         
         for r in resultados:
-            codigo = r.get("codigo", "")
-            nombre = r.get("nombre", "Sin título")
-            miniatura = r.get("miniatura", "")
+            codigo = r.get("codigo", r.get("code", ""))
+            nombre = r.get("nombre", r.get("title", r.get("name", "Sin título")))
+            miniatura = r.get("miniatura", r.get("cover", r.get("thumbnail", "")))
             
             html += f'''
                 <div class="result-card">
@@ -860,34 +871,17 @@ def search():
     else:
         resultado = neko_instance.s3h(term, page)
     
-    if isinstance(resultado, dict) and "error" in resultado:
-        return f"Error en búsqueda: {resultado['error']}<br><a href='/nekotools'>Volver</a>"
+    if isinstance(resultado, dict):
+        if "error" in resultado:
+            return f"Error en búsqueda: {resultado['error']}<br><a href='/nekotools'>Volver</a>'
+        
+        if "resultados" in resultado:
+            return redirect(url_for("search_results", 
+                                  results=json.dumps(resultado, ensure_ascii=False), 
+                                  term=term, 
+                                  page=page))
     
-    resultados_lista = []
-    if isinstance(resultado, list):
-        resultados_lista = resultado
-    
-    resultados_formateados = {
-        "total_resultados": len(resultados_lista),
-        "total_paginas": page + 10,
-        "pagina_actual": page,
-        "termino_busqueda": term,
-        "resultados": []
-    }
-    
-    for item in resultados_lista:
-        if isinstance(item, dict) and "code" in item:
-            codigo = item.get("code", "")
-            nombre = item.get("title", item.get("name", f"Resultado {codigo}"))
-            miniatura = item.get("cover", item.get("thumbnail", item.get("miniatura", "")))
-            
-            resultados_formateados["resultados"].append({
-                "codigo": codigo,
-                "nombre": nombre,
-                "miniatura": miniatura
-            })
-    
-    return redirect(url_for("search_results", results=json.dumps(resultados_formateados), term=term, page=page))
+    return f"Error: formato de respuesta inesperado<br><a href='/nekotools'>Volver</a>"
 
 @app.route("/nekotools", methods=["GET", "POST"])
 def nekotools():
@@ -943,7 +937,7 @@ def nekotools():
             if name and lista:
                 result = neko_instance.create_cbz(name, lista)
                 if result:
-                    return f"CBZ creado: {name}.cbz<br><a href='/nekotools'>Volver</a>"
+                    return f"CBZ creado: {name}.cbz<br><a href='/nekotools'>Volver</a>'
                 else:
                     return "Error al crear CBZ<br><a href='/nekotools'>Volver</a>"
         
