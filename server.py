@@ -4,9 +4,93 @@ import threading
 import time
 import uuid
 import urllib.parse
+import asyncio
+import aiohttp
+import tempfile
+import shutil
+import zipfile
 from flask import Flask, request, redirect, url_for, send_file, render_template_string
 from werkzeug.utils import secure_filename
 from neko import Neko
+
+async def async_download(self, url, save_path):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=30) as response:
+                if response.status == 200:
+                    with open(save_path, 'wb') as f:
+                        f.write(await response.read())
+                    return True
+                return False
+    except Exception:
+        return False
+
+async def download_images_concurrently(self, image_urls, max_concurrent=10):
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    async def download_one(url, index):
+        async with semaphore:
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+            temp_path = temp_file.name
+            temp_file.close()
+            
+            if await self.async_download(url, temp_path):
+                return (index, temp_path)
+            return (index, None)
+    
+    tasks = [download_one(url, i) for i, url in enumerate(image_urls)]
+    results = await asyncio.gather(*tasks)
+    
+    results.sort(key=lambda x: x[0])
+    return [r[1] for r in results if r[1]]
+
+async def create_cbz_async(self, nombre, lista):
+    try:
+        safe_nombre = self.clean_name(nombre)
+        temp_dir = tempfile.mkdtemp()
+        
+        downloaded_files = []
+        
+        for i, item in enumerate(lista):
+            if item.startswith('http'):
+                downloaded_files.append((i, item, True))
+            else:
+                if os.path.exists(item):
+                    file_path = os.path.join(temp_dir, f"{i:04d}.jpg")
+                    shutil.copy2(item, file_path)
+                    downloaded_files.append((i, file_path, False))
+                else:
+                    return None
+        
+        url_items = [(i, url) for i, url, is_url in downloaded_files if is_url]
+        
+        if url_items:
+            urls = [url for _, url in url_items]
+            indices = [idx for idx, _ in url_items]
+            
+            temp_paths = await self.download_images_concurrently(urls)
+            
+            for idx, temp_path in zip(indices, temp_paths):
+                if temp_path:
+                    dest_path = os.path.join(temp_dir, f"{idx:04d}.jpg")
+                    shutil.move(temp_path, dest_path)
+        
+        cbz_path = os.path.join(os.getcwd(), "vault", f"{safe_nombre}.cbz")
+        with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_DEFLATED) as cbz:
+            for i in range(len(lista)):
+                file_path = os.path.join(temp_dir, f"{i:04d}.jpg")
+                if os.path.exists(file_path):
+                    cbz.write(file_path, f"{i:04d}.jpg")
+        
+        shutil.rmtree(temp_dir)
+        return cbz_path
+    except Exception as e:
+        print(f"Error en create_cbz_async: {e}")
+        return None
+
+Neko.async_download = async_download
+Neko.download_images_concurrently = download_images_concurrently
+Neko.create_cbz_async = create_cbz_async
 
 app = Flask(__name__)
 app.secret_key = 'clave-secreta-temp-123'
@@ -68,7 +152,10 @@ def process_queue(queue_id, codes, mode, action):
                     successful += 1
                 elif action == 'cbz':
                     if "image_links" in result and isinstance(result["image_links"], list):
-                        neko_instance.create_cbz(base_name, result["image_links"])
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(neko_instance.create_cbz_async(base_name, result["image_links"]))
+                        loop.close()
                         results.append({
                             'code': code,
                             'success': True,
@@ -577,7 +664,8 @@ def save_json():
         json_path = os.path.join(BASE_DIR, f"{safe_name}.json")
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-        return f"JSON guardado: {safe_name}.json<br><a href='/nekotools'>Volver</a>"
+        safe_filename = os.path.basename(json_path)
+        return f"JSON guardado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.json</a><br><a href='/nekotools'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/save_txt", methods=["POST"])
@@ -591,7 +679,8 @@ def save_txt():
         with open(txt_path, 'w', encoding='utf-8') as f:
             for link in links:
                 f.write(f"{link}\n")
-        return f"TXT guardado: {safe_name}.txt<br><a href='/nekotools'>Volver</a>"
+        safe_filename = os.path.basename(txt_path)
+        return f"TXT guardado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.txt</a><br><a href='/nekotools'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/create_pdf_from_data", methods=["POST"])
@@ -603,7 +692,8 @@ def create_pdf_from_data():
         result = neko_instance.create_pdf(filename, links)
         if result and os.path.exists(result):
             safe_name = neko_instance.clean_name(filename)
-            return f"PDF creado: {safe_name}.pdf<br><a href='/nekotools'>Volver</a>"
+            safe_filename = os.path.basename(result)
+            return f"PDF creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.pdf</a><br><a href='/nekotools'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/create_cbz_from_data", methods=["POST"])
@@ -612,10 +702,14 @@ def create_cbz_from_data():
     filename = request.form.get("filename")
     if links_json and filename:
         links = json.loads(links_json)
-        result = neko_instance.create_cbz(filename, links)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(neko_instance.create_cbz_async(filename, links))
+        loop.close()
         if result and os.path.exists(result):
             safe_name = neko_instance.clean_name(filename)
-            return f"CBZ creado: {safe_name}.cbz<br><a href='/nekotools'>Volver</a>"
+            safe_filename = os.path.basename(result)
+            return f"CBZ creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.cbz</a><br><a href='/nekotools'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/search_results")
@@ -916,7 +1010,8 @@ def nekotools():
             if url and name:
                 save_path = os.path.join(BASE_DIR, secure_filename(name))
                 if neko_instance.download(url, save_path):
-                    return f"Archivo descargado: {name}<br><a href='/nekotools'>Volver</a>"
+                    safe_filename = os.path.basename(save_path)
+                    return f"Archivo descargado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{name}</a><br><a href='/nekotools'>Volver</a>"
                 else:
                     return "Error al descargar<br><a href='/nekotools'>Volver</a>"
         
@@ -935,9 +1030,14 @@ def nekotools():
             lista = request.form.get("cbz_list", "").strip().split('\n')
             lista = [item.strip() for item in lista if item.strip()]
             if name and lista:
-                result = neko_instance.create_cbz(name, lista)
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                result = loop.run_until_complete(neko_instance.create_cbz_async(name, lista))
+                loop.close()
                 if result:
-                    return f"CBZ creado: {name}.cbz<br><a href='/nekotools'>Volver</a>"
+                    safe_name = neko_instance.clean_name(name)
+                    safe_filename = os.path.basename(result)
+                    return f"CBZ creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.cbz</a><br><a href='/nekotools'>Volver</a>"
                 else:
                     return "Error al crear CBZ<br><a href='/nekotools'>Volver</a>"
         
@@ -948,7 +1048,9 @@ def nekotools():
             if name and lista:
                 result = neko_instance.create_pdf(name, lista)
                 if result:
-                    return f"PDF creado: {name}.pdf<br><a href='/nekotools'>Volver</a>"
+                    safe_name = neko_instance.clean_name(name)
+                    safe_filename = os.path.basename(result)
+                    return f"PDF creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.pdf</a><br><a href='/nekotools'>Volver</a>"
                 else:
                     return "Error al crear PDF<br><a href='/nekotools'>Volver</a>"
         
