@@ -209,7 +209,7 @@ def dir_listing(req_path):
         if os.path.isdir(abs_f):
             file_links.append(
                 f'<li><input type="checkbox" name="selected" value="{full_path}" class="file-checkbox" onchange="updateButtons()"> '
-                f'<a href="/{full_path}{"?preview=true" if preview_mode else ""}">{f}/</a> '
+                f'<a href="/{full_path}{"?preview=true" if preview_mode else ""}" target="_blank">{f}/</a> '
                 f'<form style="display:inline;" method="post" action="/delete">'
                 f'<input type="hidden" name="path" value="{full_path}">'
                 f'<button type="submit">Borrar</button></form> ({formatted_size})</li>'
@@ -218,7 +218,7 @@ def dir_listing(req_path):
             if preview_mode:
                 link = f'<a href="/{full_path}?preview=true" target="_blank">{f}</a>'
             else:
-                link = f'<a href="/{full_path}">{f}</a>'
+                link = f'<a href="/{full_path}" target="_blank">{f}</a>'
             
             file_links.append(
                 f'<li><input type="checkbox" name="selected" value="{full_path}" class="file-checkbox" onchange="updateButtons()"> '
@@ -475,6 +475,7 @@ def view_queue(queue_id):
                 {% if r.data %}
                     <br>
                     <a href="/viewer?links={{ r.links | tojson | urlencode }}&title={{ r.title }}" target="_blank"><button>Ver</button></a>
+                    <a href="/process_nhentai?codes={{ r.code }}&action=view" target="_blank"><button>Ver Directo</button></a>
                     <form method="post" action="/save_json" style="display:inline;" target="_blank">
                         <input type="hidden" name="data" value='{{ r.data | tojson }}'>
                         <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
@@ -512,10 +513,14 @@ def view_queue(queue_id):
     <p><a href="/queue/{{ queue_id }}">Actualizar</a></p>
     ''', current=queue['current'], total=queue['total'], current_code=queue['current_code'], queue_id=queue_id)
 
-@app.route("/process_nhentai", methods=["POST"])
+@app.route("/process_nhentai", methods=["GET", "POST"])
 def process_nhentai():
-    action = request.form.get("action")
-    codes_string = request.form.get("codes", "").strip()
+    if request.method == "GET":
+        codes_string = request.args.get("codes", "").strip()
+        action = request.args.get("action", "view")
+    else:
+        action = request.form.get("action")
+        codes_string = request.form.get("codes", "").strip()
     
     if not codes_string or not action:
         return redirect(url_for("nekotools"))
@@ -542,6 +547,7 @@ def process_nhentai():
             <img src="{result.get('cover_image') or result['image_links'][0]}" style="max-width:200px;">
             <pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>
             <a href="/viewer?links={urllib.parse.quote(links_json)}&title={urllib.parse.quote(title)}" target="_blank"><button>Ver</button></a>
+            <a href="/process_nhentai?codes={codes[0]}&action=view" target="_blank"><button>Ver Directo</button></a>
             <form method="post" action="/save_json" style="display:inline;" target="_blank">
                 <input type="hidden" name="data" value='{data_json}'>
                 <input type="hidden" name="filename" value="{base_name}">
@@ -583,10 +589,14 @@ def process_nhentai():
     
     return redirect(url_for('view_queue', queue_id=queue_id))
 
-@app.route("/process_3hentai", methods=["POST"])
+@app.route("/process_3hentai", methods=["GET", "POST"])
 def process_3hentai():
-    action = request.form.get("action")
-    codes_string = request.form.get("codes", "").strip()
+    if request.method == "GET":
+        codes_string = request.args.get("codes", "").strip()
+        action = request.args.get("action", "view")
+    else:
+        action = request.form.get("action")
+        codes_string = request.form.get("codes", "").strip()
     
     if not codes_string or not action:
         return redirect(url_for("nekotools"))
@@ -613,6 +623,7 @@ def process_3hentai():
             <img src="{result.get('cover_image') or result['image_links'][0]}" style="max-width:200px;">
             <pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>
             <a href="/viewer?links={urllib.parse.quote(links_json)}&title={urllib.parse.quote(title)}" target="_blank"><button>Ver</button></a>
+            <a href="/process_3hentai?codes={codes[0]}&action=view" target="_blank"><button>Ver Directo</button></a>
             <form method="post" action="/save_json" style="display:inline;" target="_blank">
                 <input type="hidden" name="data" value='{data_json}'>
                 <input type="hidden" name="filename" value="{base_name}">
@@ -665,7 +676,7 @@ def save_json():
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         safe_filename = os.path.basename(json_path)
-        return f"JSON guardado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.json</a><br><a href='/nekotools'>Volver</a>"
+        return f"JSON guardado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.json</a><br><a href='/nekotools' target='_blank'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/save_txt", methods=["POST"])
@@ -680,7 +691,7 @@ def save_txt():
             for link in links:
                 f.write(f"{link}\n")
         safe_filename = os.path.basename(txt_path)
-        return f"TXT guardado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.txt</a><br><a href='/nekotools'>Volver</a>"
+        return f"TXT guardado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.txt</a><br><a href='/nekotools' target='_blank'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/create_pdf_from_data", methods=["POST"])
@@ -693,7 +704,7 @@ def create_pdf_from_data():
         if result and os.path.exists(result):
             safe_name = neko_instance.clean_name(filename)
             safe_filename = os.path.basename(result)
-            return f"PDF creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.pdf</a><br><a href='/nekotools'>Volver</a>"
+            return f"PDF creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.pdf</a><br><a href='/nekotools' target='_blank'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/create_cbz_from_data", methods=["POST"])
@@ -709,7 +720,7 @@ def create_cbz_from_data():
         if result and os.path.exists(result):
             safe_name = neko_instance.clean_name(filename)
             safe_filename = os.path.basename(result)
-            return f"CBZ creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.cbz</a><br><a href='/nekotools'>Volver</a>"
+            return f"CBZ creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.cbz</a><br><a href='/nekotools' target='_blank'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/search_results")
@@ -734,7 +745,7 @@ def search_results():
             <head><title>Sin resultados</title></head>
             <body>
                 <h1>No se encontraron resultados para "{search_term}"</h1>
-                <p><a href="/nekotools">Volver a NekoTools</a></p>
+                <p><a href="/nekotools" target="_blank">Volver a NekoTools</a></p>
             </body>
             </html>
             '''
@@ -810,6 +821,7 @@ def search_results():
                     display: flex;
                     gap: 5px;
                     margin-top: 10px;
+                    flex-wrap: wrap;
                 }}
                 .btn {{
                     flex: 1;
@@ -821,6 +833,7 @@ def search_results():
                     text-align: center;
                     text-decoration: none;
                     display: inline-block;
+                    min-width: 60px;
                 }}
                 .btn-view {{
                     background-color: #28a745;
@@ -834,7 +847,7 @@ def search_results():
                     background-color: #dc3545;
                     color: white;
                 }}
-                .btn-json {{
+                .btn-direct {{
                     background-color: #17a2b8;
                     color: white;
                 }}
@@ -844,6 +857,7 @@ def search_results():
                     gap: 10px;
                     margin-top: 30px;
                     margin-bottom: 30px;
+                    flex-wrap: wrap;
                 }}
                 .page-link {{
                     padding: 8px 15px;
@@ -873,7 +887,7 @@ def search_results():
             </style>
         </head>
         <body>
-            <a href="/nekotools" class="back-link">← Volver a NekoTools</a>
+            <a href="/nekotools" class="back-link" target="_blank">← Volver a NekoTools</a>
             <h1>Resultados de búsqueda</h1>
             
             <div class="search-info">
@@ -897,21 +911,10 @@ def search_results():
                         <span class="result-code">{codigo}</span>
                         <div class="result-title">{nombre}</div>
                         <div class="result-actions">
-                            <form method="post" action="/process_nhentai" style="margin:0;">
-                                <input type="hidden" name="codes" value="{codigo}">
-                                <input type="hidden" name="action" value="view">
-                                <button type="submit" class="btn btn-view">Ver</button>
-                            </form>
-                            <form method="post" action="/process_nhentai" style="margin:0;">
-                                <input type="hidden" name="codes" value="{codigo}">
-                                <input type="hidden" name="action" value="cbz">
-                                <button type="submit" class="btn btn-cbz">CBZ</button>
-                            </form>
-                            <form method="post" action="/process_nhentai" style="margin:0;">
-                                <input type="hidden" name="codes" value="{codigo}">
-                                <input type="hidden" name="action" value="pdf">
-                                <button type="submit" class="btn btn-pdf">PDF</button>
-                            </form>
+                            <a href="/process_nhentai?codes={codigo}&action=view" target="_blank" class="btn btn-view">Ver</a>
+                            <a href="/process_nhentai?codes={codigo}&action=cbz" target="_blank" class="btn btn-cbz">CBZ</a>
+                            <a href="/process_nhentai?codes={codigo}&action=pdf" target="_blank" class="btn btn-pdf">PDF</a>
+                            <a href="/process_nhentai?codes={codigo}&action=view" target="_blank" class="btn btn-direct">Directo</a>
                         </div>
                     </div>
                 </div>
@@ -930,11 +933,11 @@ def search_results():
             if p == pagina_actual_int:
                 html += f'<span class="page-link active">{p}</span>'
             else:
-                html += f'<a href="/search?term={urllib.parse.quote(search_term)}&page={p}" class="page-link">{p}</a>'
+                html += f'<a href="/search?term={urllib.parse.quote(search_term)}&page={p}" class="page-link" target="_blank">{p}</a>'
         
         if total_paginas_int > 10:
             html += '<span class="page-link">...</span>'
-            html += f'<a href="/search?term={urllib.parse.quote(search_term)}&page={total_paginas_int}" class="page-link">{total_paginas_int}</a>'
+            html += f'<a href="/search?term={urllib.parse.quote(search_term)}&page={total_paginas_int}" class="page-link" target="_blank">{total_paginas_int}</a>'
         
         html += '''
             </div>
@@ -967,7 +970,7 @@ def search():
     
     if isinstance(resultado, dict):
         if "error" in resultado:
-            return f"Error en búsqueda: {resultado['error']}<br><a href='/nekotools'>Volver</a>"
+            return f"Error en búsqueda: {resultado['error']}<br><a href='/nekotools' target='_blank'>Volver</a>"
         
         if "resultados" in resultado:
             return redirect(url_for("search_results", 
@@ -975,7 +978,7 @@ def search():
                                   term=term, 
                                   page=page))
     
-    return f"Error: formato de respuesta inesperado<br><a href='/nekotools'>Volver</a>"
+    return f"Error: formato de respuesta inesperado<br><a href='/nekotools' target='_blank'>Volver</a>"
 
 @app.route("/nekotools", methods=["GET", "POST"])
 def nekotools():
@@ -989,9 +992,9 @@ def nekotools():
             if json_file:
                 try:
                     data = json.load(json_file)
-                    return f"JSON cargado: {len(data)} items<br><a href='/nekotools'>Volver</a>"
+                    return f"JSON cargado: {len(data)} items<br><a href='/nekotools' target='_blank'>Volver</a>"
                 except:
-                    return "Error al cargar JSON<br><a href='/nekotools'>Volver</a>"
+                    return "Error al cargar JSON<br><a href='/nekotools' target='_blank'>Volver</a>"
         
         elif action == "download_from_txt":
             txt_file = request.files.get("txt_file")
@@ -1000,9 +1003,9 @@ def nekotools():
                 try:
                     content = txt_file.read().decode('utf-8')
                     lines = [line.strip() for line in content.split('\n') if line.strip()]
-                    return f"TXT cargado: {len(lines)} lineas, carpeta: {folder_name}<br><a href='/nekotools'>Volver</a>"
+                    return f"TXT cargado: {len(lines)} lineas, carpeta: {folder_name}<br><a href='/nekotools' target='_blank'>Volver</a>"
                 except:
-                    return "Error al cargar TXT<br><a href='/nekotools'>Volver</a>"
+                    return "Error al cargar TXT<br><a href='/nekotools' target='_blank'>Volver</a>"
         
         elif action == "download":
             url = request.form.get("download_url")
@@ -1011,9 +1014,9 @@ def nekotools():
                 save_path = os.path.join(BASE_DIR, secure_filename(name))
                 if neko_instance.download(url, save_path):
                     safe_filename = os.path.basename(save_path)
-                    return f"Archivo descargado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{name}</a><br><a href='/nekotools'>Volver</a>"
+                    return f"Archivo descargado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{name}</a><br><a href='/nekotools' target='_blank'>Volver</a>"
                 else:
-                    return "Error al descargar<br><a href='/nekotools'>Volver</a>"
+                    return "Error al descargar<br><a href='/nekotools' target='_blank'>Volver</a>"
         
         elif action == "convert_png":
             files = request.files.getlist("file")
@@ -1023,7 +1026,7 @@ def nekotools():
                     result = neko_instance.convert_to_png(file)
                     if result:
                         converted.append(result)
-            return f"Convertidos: {len(converted)} archivos<br><a href='/nekotools'>Volver</a>"
+            return f"Convertidos: {len(converted)} archivos<br><a href='/nekotools' target='_blank'>Volver</a>"
         
         elif action == "create_cbz":
             name = request.form.get("cbz_name")
@@ -1037,9 +1040,9 @@ def nekotools():
                 if result:
                     safe_name = neko_instance.clean_name(name)
                     safe_filename = os.path.basename(result)
-                    return f"CBZ creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.cbz</a><br><a href='/nekotools'>Volver</a>"
+                    return f"CBZ creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.cbz</a><br><a href='/nekotools' target='_blank'>Volver</a>"
                 else:
-                    return "Error al crear CBZ<br><a href='/nekotools'>Volver</a>"
+                    return "Error al crear CBZ<br><a href='/nekotools' target='_blank'>Volver</a>"
         
         elif action == "create_pdf":
             name = request.form.get("pdf_name")
@@ -1050,9 +1053,9 @@ def nekotools():
                 if result:
                     safe_name = neko_instance.clean_name(name)
                     safe_filename = os.path.basename(result)
-                    return f"PDF creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.pdf</a><br><a href='/nekotools'>Volver</a>"
+                    return f"PDF creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.pdf</a><br><a href='/nekotools' target='_blank'>Volver</a>"
                 else:
-                    return "Error al crear PDF<br><a href='/nekotools'>Volver</a>"
+                    return "Error al crear PDF<br><a href='/nekotools' target='_blank'>Volver</a>"
         
         elif action == "snh" or action == "s3h":
             search_term = request.form.get("snh_search") if action == "snh" else request.form.get("s3h_search")
@@ -1071,7 +1074,7 @@ def nekotools():
     <h1>NekoTools</h1>
     
     <h2>nhentai</h2>
-    <form method="post" action="/process_nhentai">
+    <form method="post" action="/process_nhentai" target="_blank">
         Codigos: <textarea name="codes" rows="3" cols="50" placeholder="318156 o 318156 318157 318158"></textarea>
         <br>
         <button type="submit" name="action" value="view">Ver</button>
@@ -1080,7 +1083,7 @@ def nekotools():
     </form>
     
     <h2>3hentai</h2>
-    <form method="post" action="/process_3hentai">
+    <form method="post" action="/process_3hentai" target="_blank">
         Codigos: <textarea name="codes" rows="3" cols="50" placeholder="318156 o 318156 318157 318158"></textarea>
         <br>
         <button type="submit" name="action" value="view">Ver</button>
@@ -1089,14 +1092,14 @@ def nekotools():
     </form>
     
     <h2>Descargar desde JSON</h2>
-    <form method="post" enctype="multipart/form-data">
+    <form method="post" enctype="multipart/form-data" target="_blank">
         <input type="file" name="json_file" accept=".json">
         <input type="hidden" name="action" value="download_from_json">
         <button type="submit">Descargar imagenes desde JSON</button>
     </form>
     
     <h2>Descargar desde TXT</h2>
-    <form method="post" enctype="multipart/form-data">
+    <form method="post" enctype="multipart/form-data" target="_blank">
         <input type="file" name="txt_file" accept=".txt">
         <br>
         Nombre de carpeta: <input type="text" name="txt_folder" placeholder="Nombre para la carpeta">
@@ -1105,7 +1108,7 @@ def nekotools():
     </form>
     
     <h2>Descargar Archivo</h2>
-    <form method="post">
+    <form method="post" target="_blank">
         URL: <input type="text" name="download_url" placeholder="URL del archivo">
         <br>
         Nombre: <input type="text" name="download_name" placeholder="Nombre del archivo">
@@ -1114,14 +1117,14 @@ def nekotools():
     </form>
     
     <h2>Convertir a PNG</h2>
-    <form method="post" enctype="multipart/form-data">
+    <form method="post" enctype="multipart/form-data" target="_blank">
         <input type="file" name="file" multiple>
         <input type="hidden" name="action" value="convert_png">
         <button type="submit">Convertir</button>
     </form>
     
     <h2>Crear CBZ</h2>
-    <form method="post">
+    <form method="post" target="_blank">
         Nombre: <input type="text" name="cbz_name" placeholder="Nombre del archivo">
         <br>
         Lista (URLs o paths, uno por linea):<br>
@@ -1131,7 +1134,7 @@ def nekotools():
     </form>
     
     <h2>Crear PDF</h2>
-    <form method="post">
+    <form method="post" target="_blank">
         Nombre: <input type="text" name="pdf_name" placeholder="Nombre del archivo">
         <br>
         Lista (URLs o paths, uno por linea):<br>
@@ -1141,7 +1144,7 @@ def nekotools():
     </form>
     
     <h2>Buscar en nhentai</h2>
-    <form method="post">
+    <form method="post" target="_blank">
         Termino: <input type="text" name="snh_search" placeholder="Termino de busqueda">
         <br>
         Pagina: <input type="number" name="snh_page" value="1" min="1">
@@ -1150,7 +1153,7 @@ def nekotools():
     </form>
     
     <h2>Buscar en 3hentai</h2>
-    <form method="post">
+    <form method="post" target="_blank">
         Termino: <input type="text" name="s3h_search" placeholder="Termino de busqueda">
         <br>
         Pagina: <input type="number" name="s3h_page" value="1" min="1">
