@@ -475,7 +475,8 @@ def view_queue(queue_id):
                 {% if r.data %}
                     <br>
                     <a href="/viewer?links={{ r.links | tojson | urlencode }}&title={{ r.title }}" target="_blank"><button>Ver</button></a>
-                    <a href="/process_nhentai?codes={{ r.code }}&action=view" target="_blank"><button>Ver Directo</button></a>
+                    <a href="/process_nhentai?codes={{ r.code }}&action=view" target="_blank"><button>Ver Directo NH</button></a>
+                    <a href="/process_3hentai?codes={{ r.code }}&action=view" target="_blank"><button>Ver Directo 3H</button></a>
                     <form method="post" action="/save_json" style="display:inline;" target="_blank">
                         <input type="hidden" name="data" value='{{ r.data | tojson }}'>
                         <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
@@ -543,11 +544,12 @@ def process_nhentai():
             title = result.get('title', 'unknown')
             
             buttons = f'''
-            <h1>Resultado de {codes[0]}</h1>
+            <h1>Resultado de {codes[0]} (nhentai)</h1>
             <img src="{result.get('cover_image') or result['image_links'][0]}" style="max-width:200px;">
             <pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>
             <a href="/viewer?links={urllib.parse.quote(links_json)}&title={urllib.parse.quote(title)}" target="_blank"><button>Ver</button></a>
-            <a href="/process_nhentai?codes={codes[0]}&action=view" target="_blank"><button>Ver Directo</button></a>
+            <a href="/process_nhentai?codes={codes[0]}&action=view" target="_blank"><button>Ver Directo NH</button></a>
+            <a href="/process_3hentai?codes={codes[0]}&action=view" target="_blank"><button>Ver Directo 3H</button></a>
             <form method="post" action="/save_json" style="display:inline;" target="_blank">
                 <input type="hidden" name="data" value='{data_json}'>
                 <input type="hidden" name="filename" value="{base_name}">
@@ -619,11 +621,12 @@ def process_3hentai():
             title = result.get('title', 'unknown')
             
             buttons = f'''
-            <h1>Resultado de {codes[0]}</h1>
+            <h1>Resultado de {codes[0]} (3hentai)</h1>
             <img src="{result.get('cover_image') or result['image_links'][0]}" style="max-width:200px;">
             <pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>
             <a href="/viewer?links={urllib.parse.quote(links_json)}&title={urllib.parse.quote(title)}" target="_blank"><button>Ver</button></a>
-            <a href="/process_3hentai?codes={codes[0]}&action=view" target="_blank"><button>Ver Directo</button></a>
+            <a href="/process_nhentai?codes={codes[0]}&action=view" target="_blank"><button>Ver Directo NH</button></a>
+            <a href="/process_3hentai?codes={codes[0]}&action=view" target="_blank"><button>Ver Directo 3H</button></a>
             <form method="post" action="/save_json" style="display:inline;" target="_blank">
                 <input type="hidden" name="data" value='{data_json}'>
                 <input type="hidden" name="filename" value="{base_name}">
@@ -728,6 +731,7 @@ def search_results():
     results_json = request.args.get("results")
     search_term = request.args.get("term", "")
     page = request.args.get("page", "1")
+    site = request.args.get("site", "nhentai")
     
     if not results_json:
         return "No results provided", 400
@@ -749,6 +753,8 @@ def search_results():
             </body>
             </html>
             '''
+        
+        process_route = "/process_nhentai" if site == "nhentai" else "/process_3hentai"
         
         html = f'''
         <!DOCTYPE html>
@@ -884,11 +890,19 @@ def search_results():
                 .back-link:hover {{
                     text-decoration: underline;
                 }}
+                .site-badge {{
+                    background-color: #6c757d;
+                    color: white;
+                    padding: 2px 6px;
+                    border-radius: 4px;
+                    font-size: 10px;
+                    margin-left: 5px;
+                }}
             </style>
         </head>
         <body>
             <a href="/nekotools" class="back-link" target="_blank">← Volver a NekoTools</a>
-            <h1>Resultados de búsqueda</h1>
+            <h1>Resultados de búsqueda en {site}</h1>
             
             <div class="search-info">
                 <p><strong>Término:</strong> {search_term}</p>
@@ -909,12 +923,13 @@ def search_results():
                     <img src="{miniatura}" class="result-image" alt="{nombre}" onerror="this.src='https://via.placeholder.com/300x400?text=Sin+imagen'">
                     <div class="result-info">
                         <span class="result-code">{codigo}</span>
+                        <span class="site-badge">{site}</span>
                         <div class="result-title">{nombre}</div>
                         <div class="result-actions">
-                            <a href="/process_nhentai?codes={codigo}&action=view" target="_blank" class="btn btn-view">Ver</a>
-                            <a href="/process_nhentai?codes={codigo}&action=cbz" target="_blank" class="btn btn-cbz">CBZ</a>
-                            <a href="/process_nhentai?codes={codigo}&action=pdf" target="_blank" class="btn btn-pdf">PDF</a>
-                            <a href="/process_nhentai?codes={codigo}&action=view" target="_blank" class="btn btn-direct">Directo</a>
+                            <a href="{process_route}?codes={codigo}&action=view" target="_blank" class="btn btn-view">Ver</a>
+                            <a href="{process_route}?codes={codigo}&action=cbz" target="_blank" class="btn btn-cbz">CBZ</a>
+                            <a href="{process_route}?codes={codigo}&action=pdf" target="_blank" class="btn btn-pdf">PDF</a>
+                            <a href="{process_route}?codes={codigo}&action=view" target="_blank" class="btn btn-direct">Directo</a>
                         </div>
                     </div>
                 </div>
@@ -933,11 +948,11 @@ def search_results():
             if p == pagina_actual_int:
                 html += f'<span class="page-link active">{p}</span>'
             else:
-                html += f'<a href="/search?term={urllib.parse.quote(search_term)}&page={p}" class="page-link" target="_blank">{p}</a>'
+                html += f'<a href="/search?term={urllib.parse.quote(search_term)}&page={p}&site={site}" class="page-link" target="_blank">{p}</a>'
         
         if total_paginas_int > 10:
             html += '<span class="page-link">...</span>'
-            html += f'<a href="/search?term={urllib.parse.quote(search_term)}&page={total_paginas_int}" class="page-link" target="_blank">{total_paginas_int}</a>'
+            html += f'<a href="/search?term={urllib.parse.quote(search_term)}&page={total_paginas_int}&site={site}" class="page-link" target="_blank">{total_paginas_int}</a>'
         
         html += '''
             </div>
@@ -976,7 +991,8 @@ def search():
             return redirect(url_for("search_results", 
                                   results=json.dumps(resultado, ensure_ascii=False), 
                                   term=term, 
-                                  page=page))
+                                  page=page,
+                                  site=site))
     
     return f"Error: formato de respuesta inesperado<br><a href='/nekotools' target='_blank'>Volver</a>"
 
