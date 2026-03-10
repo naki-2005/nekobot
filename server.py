@@ -12,6 +12,8 @@ import zipfile
 from flask import Flask, request, redirect, url_for, send_file, render_template_string
 from werkzeug.utils import secure_filename
 from neko import Neko
+from PIL import Image
+import io
 
 async def async_download(self, url, save_path):
     try:
@@ -726,6 +728,37 @@ def create_cbz_from_data():
             return f"CBZ creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.cbz</a><br><a href='/nekotools' target='_blank'>Volver</a>"
     return redirect(url_for("nekotools"))
 
+@app.route("/convert_cover", methods=["POST"])
+def convert_cover():
+    image_url = request.form.get("image_url")
+    code = request.form.get("code")
+    site = request.form.get("site", "nhentai")
+    
+    if not image_url or not code:
+        return "Faltan parámetros", 400
+    
+    try:
+        response = requests.get(image_url, timeout=30)
+        if response.status_code != 200:
+            return "Error al descargar la imagen", 400
+        
+        img = Image.open(io.BytesIO(response.content))
+        img = img.convert("RGB")
+        
+        img_io = io.BytesIO()
+        img.save(img_io, 'PNG')
+        img_io.seek(0)
+        
+        filename = f"cover_{code}_{site}.png"
+        save_path = os.path.join(BASE_DIR, filename)
+        
+        with open(save_path, 'wb') as f:
+            f.write(img_io.getvalue())
+        
+        return f"Cover convertido: <a href='/{urllib.parse.quote(filename)}' target='_blank'>{filename}</a><br><a href='/nekotools' target='_blank'>Volver</a>"
+    except Exception as e:
+        return f"Error al convertir: {str(e)}", 500
+
 @app.route("/search_results")
 def search_results():
     results_json = request.args.get("results")
@@ -779,7 +812,7 @@ def search_results():
                 }}
                 .results-grid {{
                     display: grid;
-                    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+                    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
                     gap: 20px;
                     margin-top: 20px;
                 }}
@@ -794,11 +827,42 @@ def search_results():
                     transform: translateY(-5px);
                     box-shadow: 0 5px 20px rgba(0,0,0,0.2);
                 }}
+                .result-image-container {{
+                    position: relative;
+                    width: 100%;
+                    height: 300px;
+                }}
                 .result-image {{
                     width: 100%;
                     height: 300px;
                     object-fit: cover;
                     border-bottom: 1px solid #eee;
+                }}
+                .convert-overlay {{
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background-color: rgba(0,0,0,0.5);
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    opacity: 0;
+                    transition: opacity 0.3s ease;
+                }}
+                .result-image-container:hover .convert-overlay {{
+                    opacity: 1;
+                }}
+                .convert-btn {{
+                    background-color: #ffc107;
+                    color: #333;
+                    border: none;
+                    padding: 10px 15px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 14px;
+                    text-decoration: none;
                 }}
                 .result-info {{
                     padding: 15px;
@@ -908,6 +972,7 @@ def search_results():
                 <p><strong>Término:</strong> {search_term}</p>
                 <p><strong>Total de resultados:</strong> {total_resultados}</p>
                 <p><strong>Página:</strong> {pagina_actual} de {total_paginas}</p>
+                <p><strong>Nota:</strong> Si las imágenes no se ven, usa el botón "Convertir Cover" que aparece al pasar el mouse sobre cada imagen.</p>
             </div>
             
             <div class="results-grid">
@@ -918,9 +983,22 @@ def search_results():
             nombre = r.get("nombre", r.get("title", r.get("name", "Sin título")))
             miniatura = r.get("miniatura", r.get("cover", r.get("thumbnail", "")))
             
+            if miniatura.startswith('//'):
+                miniatura = 'https:' + miniatura
+            
             html += f'''
                 <div class="result-card">
-                    <img src="{miniatura}" class="result-image" alt="{nombre}" onerror="this.src='https://via.placeholder.com/300x400?text=Sin+imagen'">
+                    <div class="result-image-container">
+                        <img src="{miniatura}" class="result-image" alt="{nombre}" onerror="this.src='https://via.placeholder.com/300x400?text=Sin+imagen'">
+                        <div class="convert-overlay">
+                            <form method="post" action="/convert_cover" target="_blank">
+                                <input type="hidden" name="image_url" value="{miniatura}">
+                                <input type="hidden" name="code" value="{codigo}">
+                                <input type="hidden" name="site" value="{site}">
+                                <button type="submit" class="convert-btn">Convertir Cover</button>
+                            </form>
+                        </div>
+                    </div>
                     <div class="result-info">
                         <span class="result-code">{codigo}</span>
                         <span class="site-badge">{site}</span>
