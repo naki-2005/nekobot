@@ -433,6 +433,9 @@ def process_nhentai():
     if not codes_string or not action:
         return redirect(url_for("nekotools"))
     
+    if '\n' in codes_string:
+        codes_string = codes_string.replace('\n', ' ')
+    
     codes = split_codes(codes_string)
     if not codes:
         return redirect(url_for("nekotools", result="No se encontraron codigos validos"))
@@ -500,6 +503,9 @@ def process_3hentai():
     
     if not codes_string or not action:
         return redirect(url_for("nekotools"))
+    
+    if '\n' in codes_string:
+        codes_string = codes_string.replace('\n', ' ')
     
     codes = split_codes(codes_string)
     if not codes:
@@ -612,6 +618,277 @@ def create_cbz_from_data():
             return f"CBZ creado: {safe_name}.cbz<br><a href='/nekotools'>Volver</a>"
     return redirect(url_for("nekotools"))
 
+@app.route("/search_results")
+def search_results():
+    results_json = request.args.get("results")
+    search_term = request.args.get("term", "")
+    page = request.args.get("page", "1")
+    
+    if not results_json:
+        return "No results provided", 400
+    
+    try:
+        results_data = json.loads(results_json)
+        resultados = results_data.get("resultados", [])
+        total_resultados = results_data.get("total_resultados", 0)
+        total_paginas = results_data.get("total_paginas", 0)
+        pagina_actual = results_data.get("pagina_actual", 1)
+        
+        html = f'''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Resultados de búsqueda: {search_term}</title>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    margin: 20px;
+                    background-color: #f5f5f5;
+                }}
+                h1 {{
+                    color: #333;
+                }}
+                .search-info {{
+                    background-color: #fff;
+                    padding: 15px;
+                    border-radius: 5px;
+                    margin-bottom: 20px;
+                    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+                }}
+                .results-grid {{
+                    display: grid;
+                    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+                    gap: 20px;
+                    margin-top: 20px;
+                }}
+                .result-card {{
+                    background-color: #fff;
+                    border-radius: 8px;
+                    overflow: hidden;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                    transition: transform 0.3s ease;
+                }}
+                .result-card:hover {{
+                    transform: translateY(-5px);
+                    box-shadow: 0 5px 20px rgba(0,0,0,0.2);
+                }}
+                .result-image {{
+                    width: 100%;
+                    height: 300px;
+                    object-fit: cover;
+                    border-bottom: 1px solid #eee;
+                }}
+                .result-info {{
+                    padding: 15px;
+                }}
+                .result-code {{
+                    background-color: #007bff;
+                    color: white;
+                    display: inline-block;
+                    padding: 3px 8px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                    margin-bottom: 8px;
+                }}
+                .result-title {{
+                    font-size: 14px;
+                    line-height: 1.4;
+                    margin-bottom: 10px;
+                    max-height: 60px;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    display: -webkit-box;
+                    -webkit-line-clamp: 3;
+                    -webkit-box-orient: vertical;
+                }}
+                .result-actions {{
+                    display: flex;
+                    gap: 5px;
+                    margin-top: 10px;
+                }}
+                .btn {{
+                    flex: 1;
+                    padding: 8px;
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    text-align: center;
+                    text-decoration: none;
+                    display: inline-block;
+                }}
+                .btn-view {{
+                    background-color: #28a745;
+                    color: white;
+                }}
+                .btn-cbz {{
+                    background-color: #ffc107;
+                    color: #333;
+                }}
+                .btn-pdf {{
+                    background-color: #dc3545;
+                    color: white;
+                }}
+                .btn-json {{
+                    background-color: #17a2b8;
+                    color: white;
+                }}
+                .pagination {{
+                    display: flex;
+                    justify-content: center;
+                    gap: 10px;
+                    margin-top: 30px;
+                    margin-bottom: 30px;
+                }}
+                .page-link {{
+                    padding: 8px 15px;
+                    background-color: #fff;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    text-decoration: none;
+                    color: #007bff;
+                }}
+                .page-link.active {{
+                    background-color: #007bff;
+                    color: white;
+                    border-color: #007bff;
+                }}
+                .page-link:hover {{
+                    background-color: #f0f0f0;
+                }}
+                .back-link {{
+                    display: inline-block;
+                    margin-bottom: 20px;
+                    color: #007bff;
+                    text-decoration: none;
+                }}
+                .back-link:hover {{
+                    text-decoration: underline;
+                }}
+            </style>
+        </head>
+        <body>
+            <a href="/nekotools" class="back-link">← Volver a NekoTools</a>
+            <h1>Resultados de búsqueda</h1>
+            
+            <div class="search-info">
+                <p><strong>Término:</strong> {search_term}</p>
+                <p><strong>Total de resultados:</strong> {total_resultados}</p>
+                <p><strong>Página:</strong> {pagina_actual} de {total_paginas}</p>
+            </div>
+            
+            <div class="results-grid">
+        '''
+        
+        for r in resultados:
+            codigo = r.get("codigo", "")
+            nombre = r.get("nombre", "Sin título")
+            miniatura = r.get("miniatura", "")
+            
+            html += f'''
+                <div class="result-card">
+                    <img src="{miniatura}" class="result-image" alt="{nombre}" onerror="this.src='https://via.placeholder.com/300x400?text=Sin+imagen'">
+                    <div class="result-info">
+                        <span class="result-code">{codigo}</span>
+                        <div class="result-title">{nombre}</div>
+                        <div class="result-actions">
+                            <form method="post" action="/process_nhentai" style="margin:0;">
+                                <input type="hidden" name="codes" value="{codigo}">
+                                <input type="hidden" name="action" value="view">
+                                <button type="submit" class="btn btn-view">Ver</button>
+                            </form>
+                            <form method="post" action="/process_nhentai" style="margin:0;">
+                                <input type="hidden" name="codes" value="{codigo}">
+                                <input type="hidden" name="action" value="cbz">
+                                <button type="submit" class="btn btn-cbz">CBZ</button>
+                            </form>
+                            <form method="post" action="/process_nhentai" style="margin:0;">
+                                <input type="hidden" name="codes" value="{codigo}">
+                                <input type="hidden" name="action" value="pdf">
+                                <button type="submit" class="btn btn-pdf">PDF</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            '''
+        
+        html += '''
+            </div>
+            
+            <div class="pagination">
+        '''
+        
+        pagina_actual_int = int(pagina_actual)
+        total_paginas_int = int(total_paginas)
+        
+        for p in range(1, min(total_paginas_int + 1, 11)):
+            if p == pagina_actual_int:
+                html += f'<span class="page-link active">{p}</span>'
+            else:
+                html += f'<a href="/search?term={urllib.parse.quote(search_term)}&page={p}" class="page-link">{p}</a>'
+        
+        if total_paginas_int > 10:
+            html += '<span class="page-link">...</span>'
+            html += f'<a href="/search?term={urllib.parse.quote(search_term)}&page={total_paginas_int}" class="page-link">{total_paginas_int}</a>'
+        
+        html += '''
+            </div>
+        </body>
+        </html>
+        '''
+        
+        return html
+    except Exception as e:
+        return f"Error al mostrar resultados: {str(e)}", 500
+
+@app.route("/search")
+def search():
+    term = request.args.get("term", "")
+    page = request.args.get("page", "1")
+    site = request.args.get("site", "nhentai")
+    
+    if not term:
+        return redirect(url_for("nekotools"))
+    
+    try:
+        page = int(page)
+    except:
+        page = 1
+    
+    if site == "nhentai":
+        resultado = neko_instance.snh(term, page)
+    else:
+        resultado = neko_instance.s3h(term, page)
+    
+    if isinstance(resultado, dict) and "error" in resultado:
+        return f"Error en búsqueda: {resultado['error']}<br><a href='/nekotools'>Volver</a>"
+    
+    resultados_lista = []
+    if isinstance(resultado, list):
+        resultados_lista = resultado
+    
+    resultados_formateados = {
+        "total_resultados": len(resultados_lista),
+        "total_paginas": page + 10,
+        "pagina_actual": page,
+        "termino_busqueda": term,
+        "resultados": []
+    }
+    
+    for item in resultados_lista:
+        if isinstance(item, dict) and "code" in item:
+            codigo = item.get("code", "")
+            nombre = item.get("title", item.get("name", f"Resultado {codigo}"))
+            miniatura = item.get("cover", item.get("thumbnail", item.get("miniatura", "")))
+            
+            resultados_formateados["resultados"].append({
+                "codigo": codigo,
+                "nombre": nombre,
+                "miniatura": miniatura
+            })
+    
+    return redirect(url_for("search_results", results=json.dumps(resultados_formateados), term=term, page=page))
+
 @app.route("/nekotools", methods=["GET", "POST"])
 def nekotools():
     result_text = request.args.get("result", "")
@@ -681,34 +958,25 @@ def nekotools():
                 else:
                     return "Error al crear PDF<br><a href='/nekotools'>Volver</a>"
         
-        elif action == "snh":
-            search_term = request.form.get("snh_search")
-            page = request.form.get("snh_page", 1)
+        elif action == "snh" or action == "s3h":
+            search_term = request.form.get("snh_search") if action == "snh" else request.form.get("s3h_search")
+            page = request.form.get("snh_page" if action == "snh" else "s3h_page", 1)
+            
             if search_term:
                 try:
                     page = int(page)
                 except:
                     page = 1
-                resultado = neko_instance.snh(search_term, page)
-                result_text = json.dumps(resultado, indent=2, ensure_ascii=False)
-        
-        elif action == "s3h":
-            search_term = request.form.get("s3h_search")
-            page = request.form.get("s3h_page", 1)
-            if search_term:
-                try:
-                    page = int(page)
-                except:
-                    page = 1
-                resultado = neko_instance.s3h(search_term, page)
-                result_text = json.dumps(resultado, indent=2, ensure_ascii=False)
+                
+                site = "nhentai" if action == "snh" else "3hentai"
+                return redirect(url_for("search", term=search_term, page=page, site=site))
     
     html = '''
     <h1>NekoTools</h1>
     
     <h2>nhentai</h2>
     <form method="post" action="/process_nhentai">
-        Codigos: <input type="text" name="codes" size="50" placeholder="318156 o 318156 318157 318158">
+        Codigos: <textarea name="codes" rows="3" cols="50" placeholder="318156 o 318156 318157 318158"></textarea>
         <br>
         <button type="submit" name="action" value="view">Ver</button>
         <button type="submit" name="action" value="cbz">Crear CBZ</button>
@@ -717,7 +985,7 @@ def nekotools():
     
     <h2>3hentai</h2>
     <form method="post" action="/process_3hentai">
-        Codigos: <input type="text" name="codes" size="50" placeholder="318156 o 318156 318157 318158">
+        Codigos: <textarea name="codes" rows="3" cols="50" placeholder="318156 o 318156 318157 318158"></textarea>
         <br>
         <button type="submit" name="action" value="view">Ver</button>
         <button type="submit" name="action" value="cbz">Crear CBZ</button>
