@@ -616,6 +616,93 @@ def create_cbz_from_data():
 def nekotools():
     result_text = request.args.get("result", "")
     
+    if request.method == "POST":
+        action = request.form.get("action")
+        
+        if action == "download_from_json":
+            json_file = request.files.get("json_file")
+            if json_file:
+                try:
+                    data = json.load(json_file)
+                    return f"JSON cargado: {len(data)} items<br><a href='/nekotools'>Volver</a>"
+                except:
+                    return "Error al cargar JSON<br><a href='/nekotools'>Volver</a>"
+        
+        elif action == "download_from_txt":
+            txt_file = request.files.get("txt_file")
+            folder_name = request.form.get("txt_folder", "descarga")
+            if txt_file:
+                try:
+                    content = txt_file.read().decode('utf-8')
+                    lines = [line.strip() for line in content.split('\n') if line.strip()]
+                    return f"TXT cargado: {len(lines)} lineas, carpeta: {folder_name}<br><a href='/nekotools'>Volver</a>"
+                except:
+                    return "Error al cargar TXT<br><a href='/nekotools'>Volver</a>"
+        
+        elif action == "download":
+            url = request.form.get("download_url")
+            name = request.form.get("download_name")
+            if url and name:
+                save_path = os.path.join(BASE_DIR, secure_filename(name))
+                if neko_instance.download(url, save_path):
+                    return f"Archivo descargado: {name}<br><a href='/nekotools'>Volver</a>"
+                else:
+                    return "Error al descargar<br><a href='/nekotools'>Volver</a>"
+        
+        elif action == "convert_png":
+            files = request.files.getlist("file")
+            converted = []
+            for file in files:
+                if file and file.filename:
+                    result = neko_instance.convert_to_png(file)
+                    if result:
+                        converted.append(result)
+            return f"Convertidos: {len(converted)} archivos<br><a href='/nekotools'>Volver</a>"
+        
+        elif action == "create_cbz":
+            name = request.form.get("cbz_name")
+            lista = request.form.get("cbz_list", "").strip().split('\n')
+            lista = [item.strip() for item in lista if item.strip()]
+            if name and lista:
+                result = neko_instance.create_cbz(name, lista)
+                if result:
+                    return f"CBZ creado: {name}.cbz<br><a href='/nekotools'>Volver</a>"
+                else:
+                    return "Error al crear CBZ<br><a href='/nekotools'>Volver</a>"
+        
+        elif action == "create_pdf":
+            name = request.form.get("pdf_name")
+            lista = request.form.get("pdf_list", "").strip().split('\n')
+            lista = [item.strip() for item in lista if item.strip()]
+            if name and lista:
+                result = neko_instance.create_pdf(name, lista)
+                if result:
+                    return f"PDF creado: {name}.pdf<br><a href='/nekotools'>Volver</a>"
+                else:
+                    return "Error al crear PDF<br><a href='/nekotools'>Volver</a>"
+        
+        elif action == "snh":
+            search_term = request.form.get("snh_search")
+            page = request.form.get("snh_page", 1)
+            if search_term:
+                try:
+                    page = int(page)
+                except:
+                    page = 1
+                resultado = neko_instance.snh(search_term, page)
+                result_text = json.dumps(resultado, indent=2, ensure_ascii=False)
+        
+        elif action == "s3h":
+            search_term = request.form.get("s3h_search")
+            page = request.form.get("s3h_page", 1)
+            if search_term:
+                try:
+                    page = int(page)
+                except:
+                    page = 1
+                resultado = neko_instance.s3h(search_term, page)
+                result_text = json.dumps(resultado, indent=2, ensure_ascii=False)
+    
     html = '''
     <h1>NekoTools</h1>
     
