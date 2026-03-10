@@ -873,7 +873,7 @@ def search():
     
     if isinstance(resultado, dict):
         if "error" in resultado:
-            return f"Error en búsqueda: {resultado['error']}<br><a href='/nekotools'>Volver</a>'
+            return f"Error en búsqueda: {resultado['error']}<br><a href='/nekotools'>Volver</a>"
         
         if "resultados" in resultado:
             return redirect(url_for("search_results", 
@@ -937,7 +937,7 @@ def nekotools():
             if name and lista:
                 result = neko_instance.create_cbz(name, lista)
                 if result:
-                    return f"CBZ creado: {name}.cbz<br><a href='/nekotools'>Volver</a>'
+                    return f"CBZ creado: {name}.cbz<br><a href='/nekotools'>Volver</a>"
                 else:
                     return "Error al crear CBZ<br><a href='/nekotools'>Volver</a>"
         
