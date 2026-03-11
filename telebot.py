@@ -1740,11 +1740,13 @@ class NekoTelegram:
             if format_choice == "cbz":
                 cbz_path = await self._create_cbz_from_images(f"{nombre} - {code}", downloaded_images, user_id)
                 if cbz_path:
-                    await self._send_document_with_progress(message.chat.id, cbz_path, caption, thumb=thumb_path)
+                    await safe_call(message.reply_photo, photo=thumb_path, reply_to_message_id=message.id, caption=caption)
+                    await self._send_document_with_progress(message.chat.id, cbz_path, thumb=thumb_path, reply_to_message_id=message.id)
             elif format_choice == "pdf":
                 pdf_path = await self._create_pdf_from_images(f"{nombre} - {code}", downloaded_images, user_id)
                 if pdf_path:
-                    await self._send_document_with_progress(message.chat.id, pdf_path, caption, thumb=thumb_path)
+                    await safe_call(message.reply_photo, photo=thumb_path, reply_to_message_id=message.id, caption=caption)
+                    await self._send_document_with_progress(message.chat.id, pdf_path, thumb=thumb_path, reply_to_message_id=message.id)
             if thumb_path:
                 os.remove(thumb_path)
         await safe_call(progress_msg.edit_text, f"✅ Descarga {format_choice.upper()} completada: {nombre}")
