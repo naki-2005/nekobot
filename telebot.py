@@ -167,7 +167,7 @@ class NekoTelegram:
             await self._update_nyaa_message(callback_query.message, results, new_pos, query_hash)
             await callback_query.answer()
 
-    async def _send_document_with_progress(self, chat_id, document_path, caption="", thumb=None):
+    async def _send_document_with_progress(self, chat_id, document_path, caption="", thumb=None, reply_to_message_id=None):
         print(f"[DEBUG] Intentando enviar: {document_path}, tamaño: {os.path.getsize(document_path) if os.path.exists(document_path) else 'NO EXISTE'}")
         if not os.path.exists(document_path):
             print(f"[ERROR] Archivo no existe: {document_path}")
