@@ -8,5 +8,5 @@ flask
 Pillow
 TgCrypto
 bencodepy
-libtorrent
+git+https://github.com/arvidn/libtorrent.git
 python-ffmpeg
