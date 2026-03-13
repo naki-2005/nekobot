@@ -8,5 +8,5 @@ flask
 Pillow
 TgCrypto
 bencodepy
-libtorrent==2.0.11
+libtorrent
 python-ffmpeg
