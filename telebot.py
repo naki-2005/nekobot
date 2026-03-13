@@ -383,9 +383,10 @@ class NekoTelegram:
             BotCommand("up", "Subir archivo al vault"),
             BotCommand("setfile", "Configurar formato de salida (cbz/pdf/raw)"),
             BotCommand("mangasearch", "Buscar manga por término"),
-            BotCommand("mangafile", "Configurar formato de manga (cbz/pdf)"),
+            BotCommand("mangafile", "Configurar formato de manga (cbz/pdf/zip)"),
             BotCommand("mangadlset", "Configurar descarga por volumen o capítulo"),
             BotCommand("mangadlquality", "Configurar calidad de descarga (hd/sd)"),
+            BotCommand("mangadllang", "Configurar idioma de manga (en/es)"),
             BotCommand("mangadl", "Descargar manga por ID o enlace"),
             BotCommand("auto", "Configurar acciones automáticas"),
             BotCommand("nextnames", "Configurar nombres para próximos archivos"),
@@ -575,16 +576,32 @@ class NekoTelegram:
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
                 current = user_manga_settings.get(user_id, {}).get("format", "cbz")
-                await safe_call(message.reply_text, f"📚 Formato actual de manga: **{current.upper()}**\nUsa: `/mangafile cbz` o `/mangafile pdf`")
+                await safe_call(message.reply_text, f"📚 Formato actual de manga: **{current.upper()}**\nUsa: `/mangafile cbz` o `/mangafile pdf` o `/mangafile zip`")
                 return
             format_option = parts[1].lower()
-            if format_option not in ["cbz", "pdf"]:
-                await safe_call(message.reply_text, "❌ Formato inválido. Usa: cbz o pdf")
+            if format_option not in ["cbz", "pdf", "zip"]:
+                await safe_call(message.reply_text, "❌ Formato inválido. Usa: cbz, pdf o zip")
                 return
             if user_id not in user_manga_settings:
                 user_manga_settings[user_id] = {}
             user_manga_settings[user_id]["format"] = format_option
             await safe_call(message.reply_text, f"✅ Formato de manga configurado a: **{format_option.upper()}**")
+            return
+
+        elif text.startswith("/mangadllang"):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                current = user_manga_settings.get(user_id, {}).get("language", "en")
+                await safe_call(message.reply_text, f"🌐 Idioma actual: **{current}**\nUsa: `/mangadllang en` o `/mangadllang es`")
+                return
+            lang_option = parts[1].lower()
+            if lang_option not in ["en", "es"]:
+                await safe_call(message.reply_text, "❌ Idioma inválido. Usa: en o es")
+                return
+            if user_id not in user_manga_settings:
+                user_manga_settings[user_id] = {}
+            user_manga_settings[user_id]["language"] = lang_option
+            await safe_call(message.reply_text, f"✅ Idioma de manga configurado a: **{lang_option}**")
             return
         
         elif text.startswith("/mangadlset"):
@@ -718,8 +735,9 @@ class NekoTelegram:
             user_mode = user_manga_settings.get(user_id, {}).get("mode", "vol")
             user_format = user_manga_settings.get(user_id, {}).get("format", "cbz")
             user_quality = user_manga_settings.get(user_id, {}).get("quality", "hd")
+            user_lang = user_manga_settings.get(user_id, {}).get("language", "en")
             await self._process_manga_download(
-                message, manga_id, user_mode, user_format, user_quality,
+                message, manga_id, user_mode, user_format, user_quality, user_lang,
                 start_chapter, start_volume, end_chapter, end_volume, user_id
             )
             return
@@ -1166,11 +1184,11 @@ class NekoTelegram:
         except:
             await safe_call(message.reply_text, text, reply_markup=reply_markup)    
     
-    async def _process_manga_download(self, message, manga_id, mode, format_choice, quality_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
+    async def _process_manga_download(self, message, manga_id, mode, format_choice, quality_choice, language, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
             progress_msg = await safe_call(message.reply_text, f"📚 Obteniendo información para manga {manga_id}...")
             try:
-                feed_json = self.mangadex.feed(manga_id)
+                feed_json = self.mangadex.feed(manga_id, language=language)  # Se pasa el idioma
                 if not feed_json:
                     await safe_call(progress_msg.edit_text, "❌ No se pudo obtener información del manga (feed)")
                     return
@@ -1357,6 +1375,10 @@ class NekoTelegram:
                     pdf_path = await self._create_pdf_from_images(volume_name, all_volume_images, user_id)
                     if pdf_path:
                         await self._send_document_with_progress(progress_msg.chat.id, pdf_path, f"📚 {volume_name}", thumb=thumbnail_path)
+                elif format_choice == "zip" and all_volume_images:
+                    zip_path = self.neko.create_zip(volume_name, all_volume_images)
+                    if zip_path:
+                        await self._send_document_with_progress(progress_msg.chat.id, zip_path, f"📚 {volume_name}", thumb=thumbnail_path)
                 else:
                     await safe_call(progress_msg.edit_text, f"✅ Volumen {volume} guardado en vault: {vault_dir}")
                 if thumbnail_path and os.path.exists(thumbnail_path):
@@ -1475,6 +1497,10 @@ class NekoTelegram:
                         pdf_path = await self._create_pdf_from_images(f"Capítulo {chapter_num}", chapter_images, user_id)
                         if pdf_path:
                             await self._send_document_with_progress(progress_msg.chat.id, pdf_path, f"📖 Capítulo {chapter_num}", thumb=thumbnail_path)
+                    elif format_choice == "zip" and chapter_images:
+                        zip_path = self.neko.create_zip(f"Capítulo {chapter_num}", chapter_images)
+                        if zip_path:
+                            await self._send_document_with_progress(progress_msg.chat.id, zip_path, f"📖 Capítulo {chapter_num}", thumb=thumbnail_path)
                     else:
                         await safe_call(progress_msg.edit_text, f"✅ Capítulo {chapter_num} guardado en vault: {chapter_dir}")
                     if thumbnail_path and os.path.exists(thumbnail_path):
@@ -1624,6 +1650,10 @@ class NekoTelegram:
                 pdf_path = await self._create_pdf_from_images(titulo, downloaded_images, user_id)
                 if pdf_path:
                     await self._send_document_with_progress(message.chat.id, pdf_path, f"📖 {titulo}", thumb=thumb_path)
+            elif format_choice == "zip":
+                zip_path = self.neko.create_zip(titulo, downloaded_images)
+                if zip_path:
+                    await self._send_document_with_progress(message.chat.id, zip_path, f"📖 {titulo}", thumb=thumb_path)
             if thumb_path:
                 os.remove(thumb_path)
         await safe_call(progress_msg.edit_text, f"✅ Descarga {format_choice.upper()} completada: {titulo}")
@@ -1747,6 +1777,11 @@ class NekoTelegram:
                 if pdf_path:
                     await safe_call(message.reply_photo, photo=thumb_path, reply_to_message_id=message.id, caption=caption)
                     await self._send_document_with_progress(message.chat.id, pdf_path, thumb=thumb_path, reply_to_message_id=message.id)
+            elif format_choice == "zip":
+                zip_path = self.neko.create_zip(f"{nombre} - {code}", downloaded_images)
+                if zip_path:
+                    await safe_call(message.reply_photo, photo=thumb_path, reply_to_message_id=message.id, caption=caption)
+                    await self._send_document_with_progress(message.chat.id, zip_path, thumb=thumb_path, reply_to_message_id=message.id)
             if thumb_path:
                 os.remove(thumb_path)
         await safe_call(progress_msg.edit_text, f"✅ Descarga {format_choice.upper()} completada: {nombre}")
