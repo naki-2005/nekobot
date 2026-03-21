@@ -33,6 +33,10 @@ user_settings = {}
 user_manga_settings = {}
 user_auto_settings = {}
 user_nextnames = {}
+user_premium_settings = {}
+premium_enabled = False
+premium_limit = 3995
+normal_limit = 1995
 
 async def safe_call(func, *args, **kwargs):
     while True:
@@ -51,10 +55,11 @@ def format_time(seconds):
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 class NekoTelegram:
-    def __init__(self, api_id, api_hash, bot_token):
+    def __init__(self, api_id, api_hash, bot_token, admin_list):
         self.api_id = api_id
         self.api_hash = api_hash
         self.bot_token = bot_token
+        self.admin_list = admin_list
         self.neko = Neko()
         self.mangadex = MangaDex()
         self.app = Client("nekobot", api_id=int(api_id), api_hash=api_hash, bot_token=bot_token)
@@ -75,6 +80,14 @@ class NekoTelegram:
         @self.app.on_callback_query()
         async def _handle_callback(client, callback_query):
             await self._handle_callback_query(callback_query)
+    
+    def is_admin(self, user_id, username=None):
+        for admin in self.admin_list:
+            if str(admin) == str(user_id):
+                return True
+            if username and str(admin) == username:
+                return True
+        return False
     
     async def _handle_callback_query(self, callback_query):
         data = callback_query.data
@@ -167,19 +180,31 @@ class NekoTelegram:
             await self._update_nyaa_message(callback_query.message, results, new_pos, query_hash)
             await callback_query.answer()
 
-    async def _send_document_with_progress(self, chat_id, document_path, caption="", thumb=None, reply_to_message_id=None):
+    async def _send_document_with_progress(self, chat_id, document_path, caption="", thumb=None, reply_to_message_id=None, user_id=None):
         print(f"[DEBUG] Intentando enviar: {document_path}, tamaño: {os.path.getsize(document_path) if os.path.exists(document_path) else 'NO EXISTE'}")
         if not os.path.exists(document_path):
             print(f"[ERROR] Archivo no existe: {document_path}")
             await safe_call(self.app.send_message, chat_id, f"❌ Error: Archivo no encontrado: {os.path.basename(document_path)}")
             return
         file_size_mb = os.path.getsize(document_path) / (1024 * 1024)
-        if file_size_mb > 2000:
-            parts = self.neko.compress_to_7z(document_path, 2000)
-            if parts:
-                for part in parts:
-                    await self._send_document_with_progress(chat_id, part, f"{caption} (Parte {os.path.basename(part).split('.')[-1]})")
-                return
+        
+        global premium_enabled
+        
+        if premium_enabled:
+            if file_size_mb > 4000:
+                parts = self.neko.compress_to_7z(document_path, 3995)
+                if parts:
+                    for part in parts:
+                        await self._send_document_with_progress(chat_id, part, f"{caption} (Parte {os.path.basename(part).split('.')[-1]})", user_id=user_id)
+                    return
+        else:
+            if file_size_mb > 1995:
+                parts = self.neko.compress_to_7z(document_path, 1995)
+                if parts:
+                    for part in parts:
+                        await self._send_document_with_progress(chat_id, part, f"{caption} (Parte {os.path.basename(part).split('.')[-1]})", user_id=user_id)
+                    return
+        
         progress_msg = await safe_call(self.app.send_message, chat_id, "📤 Preparando envío...")
         start_time = time.time()
         upload_completed = False
@@ -396,7 +421,8 @@ class NekoTelegram:
             BotCommand("mega", "Descargar archivo de MEGA"),
             BotCommand("reset", "Reiniciar servicio Render (ServiceID BearerToken)"),
             BotCommand("scrap", "Scrapea una pagina y busca coincidencias"),
-            BotCommand("dl", "Descarga un enlace y elige formato: Imagen/Video/Audio/Documento")
+            BotCommand("dl", "Descarga un enlace y elige formato: Imagen/Video/Audio/Documento"),
+            BotCommand("premium", "Activar/desactivar modo premium (solo admins)")
         ])
         print("Comandos configurados en el bot")
 
@@ -406,6 +432,31 @@ class NekoTelegram:
             return
         text = message.text.strip()
         user_id = message.from_user.id
+        username = message.from_user.username
+
+        if text.startswith("/premium"):
+            if not self.is_admin(user_id, username):
+                await safe_call(message.reply_text, "❌ No tienes permiso para usar este comando")
+                return
+            
+            global premium_enabled
+            parts = text.split()
+            
+            if len(parts) == 1:
+                estado = "activado" if premium_enabled else "desactivado"
+                await safe_call(message.reply_text, f"⚙️ Modo premium: **{estado}**\nLímite de compresión: {'4000 MB' if premium_enabled else '1995 MB'}\n\nUsa `/premium on` para activar\nUsa `/premium off` para desactivar")
+                return
+            
+            if len(parts) >= 2:
+                if parts[1].lower() == "on":
+                    premium_enabled = True
+                    await safe_call(message.reply_text, "✅ Modo premium **activado**\nAhora los archivos > 4000 MB se comprimirán automáticamente")
+                elif parts[1].lower() == "off":
+                    premium_enabled = False
+                    await safe_call(message.reply_text, "❌ Modo premium **desactivado**\nAhora los archivos > 1995 MB se comprimirán automáticamente")
+                else:
+                    await safe_call(message.reply_text, "❌ Usa: `/premium on` o `/premium off`")
+            return
 
         if text.startswith("/listfiles"):
             vault_dir = os.path.join(os.getcwd(), "vault")
@@ -465,7 +516,7 @@ class NekoTelegram:
                     return
                 await safe_call(progress_msg.delete)
                 if os.path.exists(archivo):
-                    await self._send_document_with_progress(message.chat.id, archivo, f"🎬 {os.path.basename(archivo)}")
+                    await self._send_document_with_progress(message.chat.id, archivo, f"🎬 {os.path.basename(archivo)}", user_id=user_id)
                 else:
                     await safe_call(message.reply_text, f"✅ Video descargado: {archivo}")
             except Exception as e:
@@ -486,7 +537,7 @@ class NekoTelegram:
                     return
                 await safe_call(progress_msg.delete)
                 if os.path.exists(archivo):
-                    await self._send_document_with_progress(message.chat.id, archivo, f"🎵 {os.path.basename(archivo)}")
+                    await self._send_document_with_progress(message.chat.id, archivo, f"🎵 {os.path.basename(archivo)}", user_id=user_id)
                 else:
                     await safe_call(message.reply_text, f"✅ Audio descargado: {archivo}")
             except Exception as e:
@@ -540,7 +591,8 @@ class NekoTelegram:
                 await self._send_document_with_progress(
                     message.chat.id,
                     item_path,
-                    caption=f"📄 {selected_item}"
+                    caption=f"📄 {selected_item}",
+                    user_id=user_id
                 )
             elif os.path.isdir(item_path):
                 await safe_call(message.reply_text, f"📁 {selected_item} es una carpeta. Usa /listfiles para ver su contenido.")
@@ -1188,7 +1240,7 @@ class NekoTelegram:
         try:
             progress_msg = await safe_call(message.reply_text, f"📚 Obteniendo información para manga {manga_id}...")
             try:
-                feed_json = self.mangadex.feed(manga_id, language=language)  # Se pasa el idioma
+                feed_json = self.mangadex.feed(manga_id, language=language)
                 if not feed_json:
                     await safe_call(progress_msg.edit_text, "❌ No se pudo obtener información del manga (feed)")
                     return
@@ -1370,15 +1422,15 @@ class NekoTelegram:
                 if format_choice == "cbz" and all_volume_images:
                     cbz_path = await self._create_cbz_from_images(volume_name, all_volume_images, user_id)
                     if cbz_path:
-                        await self._send_document_with_progress(progress_msg.chat.id, cbz_path, f"📚 {volume_name}", thumb=thumbnail_path)
+                        await self._send_document_with_progress(progress_msg.chat.id, cbz_path, f"📚 {volume_name}", thumb=thumbnail_path, user_id=user_id)
                 elif format_choice == "pdf" and all_volume_images:
                     pdf_path = await self._create_pdf_from_images(volume_name, all_volume_images, user_id)
                     if pdf_path:
-                        await self._send_document_with_progress(progress_msg.chat.id, pdf_path, f"📚 {volume_name}", thumb=thumbnail_path)
+                        await self._send_document_with_progress(progress_msg.chat.id, pdf_path, f"📚 {volume_name}", thumb=thumbnail_path, user_id=user_id)
                 elif format_choice == "zip" and all_volume_images:
                     zip_path = self.neko.create_zip(volume_name, all_volume_images)
                     if zip_path:
-                        await self._send_document_with_progress(progress_msg.chat.id, zip_path, f"📚 {volume_name}", thumb=thumbnail_path)
+                        await self._send_document_with_progress(progress_msg.chat.id, zip_path, f"📚 {volume_name}", thumb=thumbnail_path, user_id=user_id)
                 else:
                     await safe_call(progress_msg.edit_text, f"✅ Volumen {volume} guardado en vault: {vault_dir}")
                 if thumbnail_path and os.path.exists(thumbnail_path):
@@ -1492,15 +1544,15 @@ class NekoTelegram:
                     if format_choice == "cbz" and chapter_images:
                         cbz_path = await self._create_cbz_from_images(f"Capítulo {chapter_num}", chapter_images, user_id)
                         if cbz_path:
-                            await self._send_document_with_progress(progress_msg.chat.id, cbz_path, f"📖 Capítulo {chapter_num}", thumb=thumbnail_path)
+                            await self._send_document_with_progress(progress_msg.chat.id, cbz_path, f"📖 Capítulo {chapter_num}", thumb=thumbnail_path, user_id=user_id)
                     elif format_choice == "pdf" and chapter_images:
                         pdf_path = await self._create_pdf_from_images(f"Capítulo {chapter_num}", chapter_images, user_id)
                         if pdf_path:
-                            await self._send_document_with_progress(progress_msg.chat.id, pdf_path, f"📖 Capítulo {chapter_num}", thumb=thumbnail_path)
+                            await self._send_document_with_progress(progress_msg.chat.id, pdf_path, f"📖 Capítulo {chapter_num}", thumb=thumbnail_path, user_id=user_id)
                     elif format_choice == "zip" and chapter_images:
                         zip_path = self.neko.create_zip(f"Capítulo {chapter_num}", chapter_images)
                         if zip_path:
-                            await self._send_document_with_progress(progress_msg.chat.id, zip_path, f"📖 Capítulo {chapter_num}", thumb=thumbnail_path)
+                            await self._send_document_with_progress(progress_msg.chat.id, zip_path, f"📖 Capítulo {chapter_num}", thumb=thumbnail_path, user_id=user_id)
                     else:
                         await safe_call(progress_msg.edit_text, f"✅ Capítulo {chapter_num} guardado en vault: {chapter_dir}")
                     if thumbnail_path and os.path.exists(thumbnail_path):
@@ -1645,15 +1697,15 @@ class NekoTelegram:
             if format_choice == "cbz":
                 cbz_path = await self._create_cbz_from_images(titulo, downloaded_images, user_id)
                 if cbz_path:
-                    await self._send_document_with_progress(message.chat.id, cbz_path, f"📖 {titulo}", thumb=thumb_path)
+                    await self._send_document_with_progress(message.chat.id, cbz_path, f"📖 {titulo}", thumb=thumb_path, user_id=user_id)
             elif format_choice == "pdf":
                 pdf_path = await self._create_pdf_from_images(titulo, downloaded_images, user_id)
                 if pdf_path:
-                    await self._send_document_with_progress(message.chat.id, pdf_path, f"📖 {titulo}", thumb=thumb_path)
+                    await self._send_document_with_progress(message.chat.id, pdf_path, f"📖 {titulo}", thumb=thumb_path, user_id=user_id)
             elif format_choice == "zip":
                 zip_path = self.neko.create_zip(titulo, downloaded_images)
                 if zip_path:
-                    await self._send_document_with_progress(message.chat.id, zip_path, f"📖 {titulo}", thumb=thumb_path)
+                    await self._send_document_with_progress(message.chat.id, zip_path, f"📖 {titulo}", thumb=thumb_path, user_id=user_id)
             if thumb_path:
                 os.remove(thumb_path)
         await safe_call(progress_msg.edit_text, f"✅ Descarga {format_choice.upper()} completada: {titulo}")
@@ -1771,17 +1823,17 @@ class NekoTelegram:
                 cbz_path = await self._create_cbz_from_images(f"{nombre} - {code}", downloaded_images, user_id)
                 if cbz_path:
                     await safe_call(message.reply_photo, photo=thumb_path, reply_to_message_id=message.id, caption=caption)
-                    await self._send_document_with_progress(message.chat.id, cbz_path, thumb=thumb_path, reply_to_message_id=message.id)
+                    await self._send_document_with_progress(message.chat.id, cbz_path, thumb=thumb_path, reply_to_message_id=message.id, user_id=user_id)
             elif format_choice == "pdf":
                 pdf_path = await self._create_pdf_from_images(f"{nombre} - {code}", downloaded_images, user_id)
                 if pdf_path:
                     await safe_call(message.reply_photo, photo=thumb_path, reply_to_message_id=message.id, caption=caption)
-                    await self._send_document_with_progress(message.chat.id, pdf_path, thumb=thumb_path, reply_to_message_id=message.id)
+                    await self._send_document_with_progress(message.chat.id, pdf_path, thumb=thumb_path, reply_to_message_id=message.id, user_id=user_id)
             elif format_choice == "zip":
                 zip_path = self.neko.create_zip(f"{nombre} - {code}", downloaded_images)
                 if zip_path:
                     await safe_call(message.reply_photo, photo=thumb_path, reply_to_message_id=message.id, caption=caption)
-                    await self._send_document_with_progress(message.chat.id, zip_path, thumb=thumb_path, reply_to_message_id=message.id)
+                    await self._send_document_with_progress(message.chat.id, zip_path, thumb=thumb_path, reply_to_message_id=message.id, user_id=user_id)
             if thumb_path:
                 os.remove(thumb_path)
         await safe_call(progress_msg.edit_text, f"✅ Descarga {format_choice.upper()} completada: {nombre}")
@@ -1999,13 +2051,18 @@ class NekoTelegram:
                     pass
                 if compress_option:
                     await safe_call(message.reply_text, "🗜️ Comprimiendo en 7z...")
-                    parts = self.neko.compress_to_7z(final_path, 2000)
+                    global premium_enabled
+                    if premium_enabled:
+                        parts = self.neko.compress_to_7z(final_path, 3995)
+                    else:
+                        parts = self.neko.compress_to_7z(final_path, 1995)
                     if parts:
                         for part in parts:
                             await self._send_document_with_progress(
                                 message.chat.id,
                                 part,
-                                caption=f"🗜️ Parte: {os.path.basename(part)}"
+                                caption=f"🗜️ Parte: {os.path.basename(part)}",
+                                user_id=user_id
                             )
                     else:
                         await safe_call(message.reply_text, "❌ Error al comprimir, enviando archivos normalmente...")
@@ -2013,7 +2070,8 @@ class NekoTelegram:
                             await self._send_document_with_progress(
                                 message.chat.id,
                                 final_path,
-                                caption=f"✅ {os.path.basename(final_path)}"
+                                caption=f"✅ {os.path.basename(final_path)}",
+                                user_id=user_id
                             )
                         elif os.path.isdir(final_path):
                             for root, dirs, files in os.walk(final_path):
@@ -2023,7 +2081,8 @@ class NekoTelegram:
                                         await self._send_document_with_progress(
                                             message.chat.id,
                                             file_path,
-                                            caption=f"✅ {os.path.basename(file_path)}"
+                                            caption=f"✅ {os.path.basename(file_path)}",
+                                            user_id=user_id
                                         )
                                         await asyncio.sleep(0.5)
                                     except Exception as e:
@@ -2033,7 +2092,8 @@ class NekoTelegram:
                         await self._send_document_with_progress(
                             message.chat.id,
                             final_path,
-                            caption=f"✅ {os.path.basename(final_path)}"
+                            caption=f"✅ {os.path.basename(final_path)}",
+                            user_id=user_id
                         )
                     elif os.path.isdir(final_path):
                         for root, dirs, files in os.walk(final_path):
@@ -2043,7 +2103,8 @@ class NekoTelegram:
                                     await self._send_document_with_progress(
                                         message.chat.id,
                                         file_path,
-                                        caption=f"✅ {os.path.basename(file_path)}"
+                                        caption=f"✅ {os.path.basename(file_path)}",
+                                        user_id=user_id
                                     )
                                     await asyncio.sleep(0.5)
                                 except Exception as e:
@@ -2105,29 +2166,39 @@ class NekoTelegram:
                     await self._send_document_with_progress(
                         message.chat.id,
                         single_item,
-                        caption=f"✅ {os.path.basename(single_item)}"
+                        caption=f"✅ {os.path.basename(single_item)}",
+                        user_id=message.from_user.id
                     )
                 elif os.path.isdir(single_item):
-                    parts = self.neko.compress_to_7z(single_item, 2000)
+                    global premium_enabled
+                    if premium_enabled:
+                        parts = self.neko.compress_to_7z(single_item, 3995)
+                    else:
+                        parts = self.neko.compress_to_7z(single_item, 1995)
                     if parts:
                         for part in parts:
                             await self._send_document_with_progress(
                                 message.chat.id,
                                 part,
-                                f"✅ {os.path.basename(part)}"
+                                f"✅ {os.path.basename(part)}",
+                                user_id=message.from_user.id
                             )
                     else:
                         await safe_call(status_msg.edit_text, "❌ Error al comprimir carpeta")
                 else:
                     await safe_call(status_msg.edit_text, "❌ Tipo de archivo no soportado")
             else:
-                parts = self.neko.compress_to_7z(download_path, 2000)
+                if premium_enabled:
+                    parts = self.neko.compress_to_7z(download_path, 3995)
+                else:
+                    parts = self.neko.compress_to_7z(download_path, 1995)
                 if parts:
                     for part in parts:
                         await self._send_document_with_progress(
                             message.chat.id,
                             part,
-                            f"✅ {os.path.basename(part)}"
+                            f"✅ {os.path.basename(part)}",
+                            user_id=message.from_user.id
                         )
                 else:
                     await safe_call(status_msg.edit_text, "❌ Error al comprimir archivos")
@@ -2166,15 +2237,17 @@ def main():
     parser.add_argument("-T", "--token", help="Token del Bot")
     parser.add_argument("-F", "--flask", action="store_true", 
                        help="Incluir servidor Flask junto con el bot")
+    parser.add_argument("-admin", "--admin", action="append", help="Administradores (ID o username)")
     args = parser.parse_args()
     api_id = args.api or os.environ.get("API_ID")
     api_hash = args.hash or os.environ.get("API_HASH")
     bot_token = args.token or os.environ.get("BOT_TOKEN")
+    admin_list = args.admin if args.admin else []
     if not all([api_id, api_hash, bot_token]):
         print("Error: Faltan credenciales. Usa -A -H -T o variables de entorno.")
         sys.exit(1)
     dlselenium.dl_files()
-    bot = NekoTelegram(api_id, api_hash, bot_token)
+    bot = NekoTelegram(api_id, api_hash, bot_token, admin_list)
     if args.flask:
         bot.start_flask()
     print("[INFO] Iniciando bot de Telegram...")
