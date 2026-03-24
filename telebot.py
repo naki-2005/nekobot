@@ -1953,7 +1953,7 @@ class NekoTelegram:
     
     async def _handle_leech_command(self, message):
         user_id = message.from_user.id
-        compress_option = "-z" in message.text
+        compress_option = "-z" in message.text.lower()
         if message.reply_to_message:
             reply = message.reply_to_message
             if reply.document and reply.document.file_size <= 5 * 1024 * 1024:
@@ -1968,7 +1968,7 @@ class NekoTelegram:
         parts = message.text.split()
         torrent_input = None
         if len(parts) > 1:
-            filtered_parts = [p for p in parts[1:] if p != "-z"]
+            filtered_parts = [p for p in parts[1:] if p.lower() != "-z"]
             if filtered_parts:
                 torrent_input = filtered_parts[0].strip()
         if torrent_input:
@@ -2053,35 +2053,22 @@ class NekoTelegram:
                     await safe_call(message.reply_text, "🗜️ Comprimiendo en 7z...")
                     global premium_enabled
                     
-                    if os.path.isfile(final_path):
-                        total_size = os.path.getsize(final_path) / (1024 * 1024)
-                    else:
-                        total_size = 0
-                        for root, dirs, files in os.walk(final_path):
-                            for file in files:
-                                total_size += os.path.getsize(os.path.join(root, file))
-                        total_size /= (1024 * 1024)
-                    
                     if premium_enabled:
                         target_size = premium_limit
                     else:
                         target_size = normal_limit
                     
-                    if total_size > target_size:
-                        parts = self.neko.compress_to_7z(final_path, target_size)
-                        if parts:
-                            for part in parts:
-                                await self._send_document_with_progress(
-                                    message.chat.id,
-                                    part,
-                                    caption=f"🗜️ Parte comprimida: {os.path.basename(part)}",
-                                    user_id=user_id
-                                )
-                        else:
-                            await safe_call(message.reply_text, "❌ Error al comprimir, enviando archivos normalmente...")
-                            await self._send_files_normally(message, final_path, user_id)
+                    parts = self.neko.compress_to_7z(final_path, target_size)
+                    if parts:
+                        for part in parts:
+                            await self._send_document_with_progress(
+                                message.chat.id,
+                                part,
+                                caption=f"🗜️ {os.path.basename(part)}",
+                                user_id=user_id
+                            )
                     else:
-                        await safe_call(message.reply_text, f"📦 Archivo menor a {target_size}MB, enviando sin comprimir...")
+                        await safe_call(message.reply_text, "❌ Error al comprimir, enviando archivos sin comprimir...")
                         await self._send_files_normally(message, final_path, user_id)
                 else:
                     await self._send_files_normally(message, final_path, user_id)
