@@ -1953,14 +1953,15 @@ class NekoTelegram:
     
     async def _handle_leech_command(self, message):
         user_id = message.from_user.id
-        compress_option = "-z" in message.text.lower()
+        compress_7z = "-7" in message.text
+        compress_zip = "-z" in message.text.lower()
         if message.reply_to_message:
             reply = message.reply_to_message
             if reply.document and reply.document.file_size <= 5 * 1024 * 1024:
-                await self._process_torrent_file(message, reply.document, compress_option)
+                await self._process_torrent_file(message, reply.document, compress_7z, compress_zip)
                 return
             elif reply.text:
-                await self._process_torrent_text(message, reply.text, compress_option)
+                await self._process_torrent_text(message, reply.text, compress_7z, compress_zip)
                 return
             else:
                 await safe_call(message.reply_text, "❌ Responde a un mensaje con texto o archivo .torrent (<5MB)")
@@ -1968,15 +1969,15 @@ class NekoTelegram:
         parts = message.text.split()
         torrent_input = None
         if len(parts) > 1:
-            filtered_parts = [p for p in parts[1:] if p.lower() != "-z"]
+            filtered_parts = [p for p in parts[1:] if p != "-7" and p.lower() != "-z"]
             if filtered_parts:
                 torrent_input = filtered_parts[0].strip()
         if torrent_input:
-            await self._process_torrent_text(message, torrent_input, compress_option)
+            await self._process_torrent_text(message, torrent_input, compress_7z, compress_zip)
         else:
-            await safe_call(message.reply_text, "❌ Usa: `/leech magnet:...` o `/leech http://...torrent` o responde a un archivo\nUsa `/leech -z ...` para comprimir antes de enviar")
+            await safe_call(message.reply_text, "❌ Usa: `/leech magnet:...` o `/leech http://...torrent` o responde a un archivo\nUsa `/leech -7` para comprimir en 7z\nUsa `/leech -z` para comprimir en zip")
     
-    async def _process_torrent_file(self, message, document, compress_option=False):
+    async def _process_torrent_file(self, message, document, compress_7z=False, compress_zip=False):
         if not document.file_name.endswith('.torrent'):
             await safe_call(message.reply_text, "❌ El archivo debe ser .torrent")
             return
@@ -1988,13 +1989,13 @@ class NekoTelegram:
             torrent_data = f.read()
         magnet = self._torrent_to_magnet(torrent_data)
         os.remove(temp_path)
-        await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_option)
+        await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_7z, compress_zip)
     
-    async def _process_torrent_text(self, message, text, compress_option=False):
+    async def _process_torrent_text(self, message, text, compress_7z=False, compress_zip=False):
         text = text.strip()
         if text.startswith("magnet:?"):
             magnet = text
-            await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_option)
+            await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_7z, compress_zip)
             return
         elif text.endswith(".torrent"):
             if text.startswith("http://") or text.startswith("https://"):
@@ -2004,7 +2005,7 @@ class NekoTelegram:
                             if response.status == 200:
                                 torrent_data = await response.read()
                                 magnet = self._torrent_to_magnet(torrent_data)
-                                await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_option)
+                                await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_7z, compress_zip)
                             else:
                                 await safe_call(message.reply_text, f"❌ Error al descargar")
                 except Exception as e:
@@ -2014,19 +2015,19 @@ class NekoTelegram:
                     with open(text, "rb") as f:
                         torrent_data = f.read()
                     magnet = self._torrent_to_magnet(torrent_data)
-                    await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_option)
+                    await self._start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_7z, compress_zip)
                 else:
                     await safe_call(message.reply_text, "❌ Archivo no encontrado")
         else:
             await safe_call(message.reply_text, "❌ Enlace no válido")
     
-    async def _start_torrent_download(self, message, result, user_id, compress_option=False):
+    async def _start_torrent_download(self, message, result, user_id, compress_7z=False, compress_zip=False):
         magnet = result.get("magnet", "")
         if not magnet:
             return
         download_path = os.path.join(os.getcwd(), "vault", str(user_id), "torrents")
         os.makedirs(download_path, exist_ok=True)
-        status_msg = await safe_call(message.reply_text, "⏳ Iniciando descarga torrent..." + (" (comprimirá en 7z antes de enviar)" if compress_option else ""))
+        status_msg = await safe_call(message.reply_text, "⏳ Iniciando descarga torrent..." + (" (comprimirá en 7z antes de enviar)" if compress_7z else " (comprimirá en zip antes de enviar)" if compress_zip else ""))
         try:
             download_generator = self.neko.download_magnet(magnet, download_path)
             final_path = None
@@ -2036,7 +2037,7 @@ class NekoTelegram:
                 if progress_text.startswith("📥"):
                     current_time = time.time()
                     if progress_text != last_progress and current_time - last_update_time >= 10:
-                        await safe_call(status_msg.edit_text, progress_text + (" (comprimirá al finalizar)" if compress_option else ""))
+                        await safe_call(status_msg.edit_text, progress_text + (" (comprimirá al finalizar)" if compress_7z or compress_zip else ""))
                         last_progress = progress_text
                         last_update_time = current_time
                 elif progress_text.startswith("✅") and "COMPLETADO" in progress_text:
@@ -2049,15 +2050,13 @@ class NekoTelegram:
                     await status_msg.delete()
                 except:
                     pass
-                if compress_option:
+                if compress_7z:
                     await safe_call(message.reply_text, "🗜️ Comprimiendo en 7z...")
                     global premium_enabled
-                    
                     if premium_enabled:
                         target_size = premium_limit
                     else:
                         target_size = normal_limit
-                    
                     parts = self.neko.compress_to_7z(final_path, target_size)
                     if parts:
                         for part in parts:
@@ -2068,7 +2067,24 @@ class NekoTelegram:
                                 user_id=user_id
                             )
                     else:
-                        await safe_call(message.reply_text, "❌ Error al comprimir, enviando archivos sin comprimir...")
+                        await safe_call(message.reply_text, "❌ Error al comprimir en 7z, enviando archivos sin comprimir...")
+                        await self._send_files_normally(message, final_path, user_id)
+                elif compress_zip:
+                    await safe_call(message.reply_text, "🗜️ Comprimiendo en zip...")
+                    zip_path = await self._create_zip_from_path(final_path)
+                    if zip_path and os.path.exists(zip_path):
+                        await self._send_document_with_progress(
+                            message.chat.id,
+                            zip_path,
+                            caption=f"🗜️ {os.path.basename(zip_path)}",
+                            user_id=user_id
+                        )
+                        try:
+                            os.remove(zip_path)
+                        except:
+                            pass
+                    else:
+                        await safe_call(message.reply_text, "❌ Error al comprimir en zip, enviando archivos sin comprimir...")
                         await self._send_files_normally(message, final_path, user_id)
                 else:
                     await self._send_files_normally(message, final_path, user_id)
@@ -2088,6 +2104,31 @@ class NekoTelegram:
             except:
                 pass
             await safe_call(message.reply_text, f"❌ Error en la descarga torrent: {str(e)}")
+    
+    async def _create_zip_from_path(self, path):
+        try:
+            if os.path.isfile(path):
+                zip_name = os.path.splitext(os.path.basename(path))[0] + ".zip"
+                zip_path = os.path.join(os.path.dirname(path), zip_name)
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    zipf.write(path, os.path.basename(path))
+                os.remove(path)
+                return zip_path
+            elif os.path.isdir(path):
+                zip_name = os.path.basename(os.path.normpath(path)) + ".zip"
+                zip_path = os.path.join(os.path.dirname(path), zip_name)
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    for root, dirs, files in os.walk(path):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            arcname = os.path.relpath(file_path, os.path.dirname(path))
+                            zipf.write(file_path, arcname)
+                shutil.rmtree(path, ignore_errors=True)
+                return zip_path
+            return None
+        except Exception as e:
+            print(f"Error creando zip: {e}")
+            return None
     
     async def _send_files_normally(self, message, final_path, user_id):
         if os.path.isfile(final_path):
