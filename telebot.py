@@ -134,7 +134,9 @@ async def add_cover_art(mp3_path: str, cover_url: str) -> None:
             os.remove(temp_path)
     finally:
         if os.path.exists(temp_cover_path):
-            os.remove(temp_cover_path)async def safe_call(func, *args, **kwargs):
+            os.remove(temp_cover_path)
+            
+async def safe_call(func, *args, **kwargs):
     while True:
         try:
             return await func(*args, **kwargs)
