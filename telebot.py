@@ -39,18 +39,33 @@ premium_limit = 3995
 normal_limit = 1995
 
 async def convert_video_to_mp3(video_path: str, output_path: str = None) -> str:
-    import ffmpeg
+    import subprocess
     
     if output_path is None:
         output_path = os.path.splitext(video_path)[0] + ".mp3"
     
     try:
-        (
-            ffmpeg
-            .input(video_path)
-            .output(output_path, acodec='mp3', ab='192k', ar='44100')
-            .run(overwrite_output=True, quiet=True)
+        cmd = [
+            'ffmpeg',
+            '-i', video_path,
+            '-acodec', 'mp3',
+            '-ab', '192k',
+            '-ar', '44100',
+            '-y',
+            output_path
+        ]
+        
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
         )
+        
+        await process.communicate()
+        
+        if process.returncode != 0:
+            raise Exception(f"FFmpeg error code: {process.returncode}")
+        
         return output_path
     except Exception as e:
         print(f"Error converting video to audio: {e}")
