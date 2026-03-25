@@ -38,6 +38,23 @@ premium_enabled = False
 premium_limit = 3995
 normal_limit = 1995
 
+async def convert_video_to_mp3(video_path: str, output_path: str = None) -> str:
+    import ffmpeg
+    
+    if output_path is None:
+        output_path = os.path.splitext(video_path)[0] + ".mp3"
+    
+    try:
+        (
+            ffmpeg
+            .input(video_path)
+            .output(output_path, acodec='mp3', ab='192k', ar='44100')
+            .run(overwrite_output=True, quiet=True)
+        )
+        return output_path
+    except Exception as e:
+        print(f"Error converting video to audio: {e}")
+        raise
 async def safe_call(func, *args, **kwargs):
     while True:
         try:
@@ -557,7 +574,57 @@ class NekoTelegram:
             texto_buscar = parts[2].strip()
             await self.scrap(message, link, texto_buscar)
             return
-        
+
+        elif text.startswith("/mp3"):
+            if message.reply_to_message:
+                reply = message.reply_to_message
+                video_file = None
+                
+                if reply.video:
+                    video_file = reply.video
+                elif reply.document and reply.document.mime_type and reply.document.mime_type.startswith("video/"):
+                    video_file = reply.document
+                else:
+                    await safe_call(message.reply_text, "❌ Responde a un video o archivo de video con /mp3")
+                    return
+                
+                progress_msg = await safe_call(message.reply_text, "📥 Descargando video...")
+                
+                temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                temp_video_path = temp_video.name
+                temp_video.close()
+                
+                await self.app.download_media(video_file, file_name=temp_video_path)
+                
+                await safe_call(progress_msg.edit_text, "🎵 Convirtiendo a MP3...")
+                
+                temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+                temp_audio_path = temp_audio.name
+                temp_audio.close()
+                
+                try:
+                    output_path = await convert_video_to_mp3(temp_video_path, temp_audio_path)
+                    
+                    await safe_call(progress_msg.edit_text, "📤 Enviando audio...")
+                    
+                    await safe_call(
+                        message.reply_audio,
+                        audio=output_path,
+                        caption="🎵 Audio convertido desde video"
+                    )
+                    
+                    await safe_call(progress_msg.delete)
+                    
+                except Exception as e:
+                    await safe_call(progress_msg.edit_text, f"❌ Error: {str(e)}")
+                finally:
+                    if os.path.exists(temp_video_path):
+                        os.remove(temp_video_path)
+                    if os.path.exists(temp_audio_path):
+                        os.remove(temp_audio_path)
+            else:
+                await safe_call(message.reply_text, "❌ Responde a un video o archivo de video con /mp3")
+                return
         elif text.startswith("/dl "):
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
