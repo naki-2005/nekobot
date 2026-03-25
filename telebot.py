@@ -38,7 +38,7 @@ premium_enabled = False
 premium_limit = 3995
 normal_limit = 1995
 
-async def convert_video_to_mp3(video_path: str, output_path: str = None) -> str:
+async def convert_video_to_mp3(video_path: str, output_path: str = None, metadata: dict = None) -> str:
     import subprocess
     
     if output_path is None:
@@ -51,9 +51,20 @@ async def convert_video_to_mp3(video_path: str, output_path: str = None) -> str:
             '-acodec', 'mp3',
             '-ab', '192k',
             '-ar', '44100',
-            '-y',
-            output_path
+            '-y'
         ]
+        
+        if metadata:
+            if 'title' in metadata:
+                cmd.extend(['-metadata', f'title={metadata["title"]}'])
+            if 'artist' in metadata:
+                cmd.extend(['-metadata', f'artist={metadata["artist"]}'])
+            if 'album' in metadata:
+                cmd.extend(['-metadata', f'album={metadata["album"]}'])
+            if 'year' in metadata:
+                cmd.extend(['-metadata', f'date={metadata["year"]}'])
+        
+        cmd.append(output_path)
         
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -66,11 +77,64 @@ async def convert_video_to_mp3(video_path: str, output_path: str = None) -> str:
         if process.returncode != 0:
             raise Exception(f"FFmpeg error code: {process.returncode}")
         
+        if metadata and 'cover' in metadata and metadata['cover']:
+            await add_cover_art(output_path, metadata['cover'])
+        
         return output_path
     except Exception as e:
         print(f"Error converting video to audio: {e}")
         raise
-async def safe_call(func, *args, **kwargs):
+
+async def add_cover_art(mp3_path: str, cover_url: str) -> None:
+    import subprocess
+    import aiohttp
+    import aiofiles
+    
+    temp_cover = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+    temp_cover_path = temp_cover.name
+    temp_cover.close()
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(cover_url) as response:
+                if response.status == 200:
+                    async with aiofiles.open(temp_cover_path, 'wb') as f:
+                        await f.write(await response.read())
+                else:
+                    raise Exception("Failed to download cover image")
+        
+        temp_path = mp3_path + ".temp.mp3"
+        
+        cmd = [
+            'ffmpeg',
+            '-i', mp3_path,
+            '-i', temp_cover_path,
+            '-c', 'copy',
+            '-map', '0',
+            '-map', '1',
+            '-metadata', 's:v=title=Album cover',
+            '-metadata', 's:v=comment=Cover (front)',
+            '-id3v2_version', '3',
+            temp_path
+        ]
+        
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        
+        await process.communicate()
+        
+        if process.returncode == 0:
+            shutil.move(temp_path, mp3_path)
+    except Exception as e:
+        print(f"Error adding cover art: {e}")
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+    finally:
+        if os.path.exists(temp_cover_path):
+            os.remove(temp_cover_path)async def safe_call(func, *args, **kwargs):
     while True:
         try:
             return await func(*args, **kwargs)
@@ -603,6 +667,37 @@ class NekoTelegram:
                     await safe_call(message.reply_text, "❌ Responde a un video o archivo de video con /mp3")
                     return
                 
+                parts = text.split(maxsplit=1)
+                metadata = {}
+                custom_filename = None
+                
+                if len(parts) > 1:
+                    args = parts[1]
+                    if "-f" in args:
+                        match = re.search(r'-f "([^"]+)"', args)
+                        if match:
+                            custom_filename = match.group(1)
+                    if "-n" in args:
+                        match = re.search(r'-n "([^"]+)"', args)
+                        if match:
+                            metadata['title'] = match.group(1)
+                    if "-a" in args:
+                        match = re.search(r'-a "([^"]+)"', args)
+                        if match:
+                            metadata['artist'] = match.group(1)
+                    if "-A" in args:
+                        match = re.search(r'-A "([^"]+)"', args)
+                        if match:
+                            metadata['album'] = match.group(1)
+                    if "-y" in args:
+                        match = re.search(r'-y "(\d{4})"', args)
+                        if match:
+                            metadata['year'] = match.group(1)
+                    if "-c" in args:
+                        match = re.search(r'-c "([^"]+)"', args)
+                        if match:
+                            metadata['cover'] = match.group(1)
+                
                 progress_msg = await safe_call(message.reply_text, "📥 Descargando video...")
                 
                 temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
@@ -613,12 +708,15 @@ class NekoTelegram:
                 
                 await safe_call(progress_msg.edit_text, "🎵 Convirtiendo a MP3...")
                 
-                temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+                if custom_filename:
+                    temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3", prefix=custom_filename)
+                else:
+                    temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
                 temp_audio_path = temp_audio.name
                 temp_audio.close()
                 
                 try:
-                    output_path = await convert_video_to_mp3(temp_video_path, temp_audio_path)
+                    output_path = await convert_video_to_mp3(temp_video_path, temp_audio_path, metadata)
                     
                     await safe_call(progress_msg.edit_text, "📤 Enviando audio...")
                     
