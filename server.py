@@ -10,11 +10,13 @@ import tempfile
 import shutil
 import zipfile
 import requests
-from flask import Flask, request, redirect, url_for, send_file, render_template_string
+from flask import Flask, request, redirect, url_for, send_file, render_template_string, session
 from werkzeug.utils import secure_filename
 from neko import Neko
 from PIL import Image
 import io
+import subprocess
+import re
 
 async def async_download(self, url, save_path):
     try:
@@ -103,6 +105,7 @@ os.makedirs(BASE_DIR, exist_ok=True)
 neko_instance = Neko()
 
 download_queues = {}
+torrent_downloads = {}
 
 def format_size(size_bytes):
     size_kb = size_bytes / 1024
@@ -190,15 +193,81 @@ def process_queue(queue_id, codes, mode, action):
     queue['failed'] = failed
     queue['status'] = 'completed'
 
+def download_torrent_thread(download_id, magnet_link, download_path):
+    try:
+        torrent_downloads[download_id]['status'] = 'downloading'
+        process = subprocess.Popen([
+            'aria2c', '--seed-time=0', '--summary-interval=1',
+            '-d', download_path, magnet_link
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        
+        total_size = 0
+        completed_size = 0
+        current_file = ""
+        
+        while True:
+            line = process.stderr.readline()
+            if not line and process.poll() is not None:
+                break
+            
+            if '#DONE' in line:
+                match = re.search(r'#DONE\s+(.+)', line)
+                if match:
+                    current_file = match.group(1).strip()
+            
+            if 'DL#' in line:
+                size_match = re.search(r'\((\d+)%\)', line)
+                if size_match:
+                    percent = int(size_match.group(1))
+                    
+                    speed_match = re.search(r'(\d+(?:\.\d+)?)([KM])B/s', line)
+                    speed_text = "0 KB/s"
+                    if speed_match:
+                        speed_val = float(speed_match.group(1))
+                        speed_unit = speed_match.group(2)
+                        if speed_unit == 'M':
+                            speed_text = f"{speed_val:.1f} MB/s"
+                        else:
+                            speed_text = f"{speed_val:.0f} KB/s"
+                    
+                    torrent_downloads[download_id]['progress'] = percent
+                    torrent_downloads[download_id]['speed'] = speed_text
+                    torrent_downloads[download_id]['current_file'] = current_file
+            
+            if 'COMPLETED' in line or '已完成' in line:
+                torrent_downloads[download_id]['progress'] = 100
+                torrent_downloads[download_id]['status'] = 'completed'
+                break
+        
+        process.wait()
+        
+        if torrent_downloads[download_id]['progress'] == 100:
+            torrent_downloads[download_id]['status'] = 'completed'
+            downloaded_files = []
+            for root, dirs, files in os.walk(download_path):
+                for file in files:
+                    if file.endswith(('.mp4', '.mkv', '.avi', '.mov', '.jpg', '.png', '.zip', '.rar')):
+                        downloaded_files.append(os.path.join(root, file))
+            torrent_downloads[download_id]['files'] = downloaded_files
+        else:
+            torrent_downloads[download_id]['status'] = 'failed'
+            
+    except Exception as e:
+        torrent_downloads[download_id]['status'] = 'failed'
+        torrent_downloads[download_id]['error'] = str(e)
+
 @app.route("/", defaults={"req_path": ""})
 @app.route("/<path:req_path>")
 def dir_listing(req_path):
     preview_mode = request.args.get('preview', 'false') == 'true'
+    same_tab = session.get('same_tab', True)
     
     abs_path = os.path.join(BASE_DIR, req_path)
     if not os.path.exists(abs_path):
         return "Ruta no encontrada", 404
     if os.path.isfile(abs_path):
+        if req_path.endswith('.temp'):
+            return "Archivo temporal, no disponible para descarga", 403
         return send_file(abs_path, as_attachment=not preview_mode)
     
     files = neko_instance.sort_directory(abs_path)
@@ -208,28 +277,44 @@ def dir_listing(req_path):
         abs_f = os.path.join(abs_path, f)
         size = os.path.getsize(abs_f) if os.path.isfile(abs_f) else 0
         formatted_size = format_size(size)
+        target_attr = '' if same_tab else ' target="_blank"'
         
         if os.path.isdir(abs_f):
             file_links.append(
                 f'<li><input type="checkbox" name="selected" value="{full_path}" class="file-checkbox" onchange="updateButtons()"> '
-                f'<a href="/{full_path}{"?preview=true" if preview_mode else ""}" target="_blank">{f}/</a> '
+                f'<a href="/{full_path}{"?preview=true" if preview_mode else ""}"{target_attr}>{f}/</a> '
                 f'<form style="display:inline;" method="post" action="/delete">'
                 f'<input type="hidden" name="path" value="{full_path}">'
                 f'<button type="submit">Borrar</button></form> ({formatted_size})</li>'
             )
         else:
-            if preview_mode:
-                link = f'<a href="/{full_path}?preview=true" target="_blank">{f}</a>'
+            if f.endswith('.temp'):
+                file_links.append(
+                    f'<li><span style="color:gray;">{f}</span> ({formatted_size}) '
+                    f'<form style="display:inline;" method="post" action="/delete">'
+                    f'<input type="hidden" name="path" value="{full_path}">'
+                    f'<button type="submit">Borrar</button></form></li>'
+                )
             else:
-                link = f'<a href="/{full_path}" target="_blank">{f}</a>'
-            
-            file_links.append(
-                f'<li><input type="checkbox" name="selected" value="{full_path}" class="file-checkbox" onchange="updateButtons()"> '
-                f'{link} '
-                f'<form style="display:inline;" method="post" action="/delete">'
-                f'<input type="hidden" name="path" value="{full_path}">'
-                f'<button type="submit">Borrar</button></form> ({formatted_size})</li>'
-            )
+                if preview_mode:
+                    link = f'<a href="/{full_path}?preview=true"{target_attr}>{f}</a>'
+                else:
+                    link = f'<a href="/{full_path}"{target_attr}>{f}</a>'
+                
+                file_links.append(
+                    f'<li><input type="checkbox" name="selected" value="{full_path}" class="file-checkbox" onchange="updateButtons()"> '
+                    f'{link} '
+                    f'<form style="display:inline;" method="post" action="/delete">'
+                    f'<input type="hidden" name="path" value="{full_path}">'
+                    f'<button type="submit">Borrar</button></form> ({formatted_size})</li>'
+                )
+    
+    same_tab_status = "activado" if same_tab else "desactivado"
+    same_tab_button = f'''
+    <form method="post" action="/toggle_same_tab" style="margin-bottom: 10px;">
+        <button type="submit">Abrir Links en la Pestaña Actual: {same_tab_status}</button>
+    </form>
+    '''
     
     toggle_button = f'''
     <form method="get" style="margin-bottom: 20px;">
@@ -362,9 +447,14 @@ def dir_listing(req_path):
     '''
     
     return render_template_string(
-        "<h1>Contenido de {{path}}</h1>{{toggle|safe}}{{selection|safe}}<ul>{{links|safe}}</ul>{{upload|safe}}{{script|safe}}",
-        path=req_path or "/", links="".join(file_links), upload=upload_form, toggle=toggle_button, selection=selection_buttons, script=script
+        "<h1>Contenido de {{path}}</h1>{{same_tab|safe}}{{toggle|safe}}{{selection|safe}}<ul>{{links|safe}}</ul>{{upload|safe}}{{script|safe}}",
+        path=req_path or "/", links="".join(file_links), upload=upload_form, toggle=toggle_button, selection=selection_buttons, script=script, same_tab=same_tab_button
     )
+
+@app.route("/toggle_same_tab", methods=["POST"])
+def toggle_same_tab():
+    session['same_tab'] = not session.get('same_tab', True)
+    return redirect(request.referrer or url_for("dir_listing"))
 
 @app.route("/delete", methods=["POST"])
 def delete_file():
@@ -401,6 +491,50 @@ def upload_file():
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             file.save(save_path)
     return redirect(url_for("dir_listing", req_path=""))
+
+@app.route("/tdl", methods=["GET"])
+def torrent_downloads_page():
+    download_id = request.args.get("id")
+    
+    if download_id and download_id in torrent_downloads:
+        info = torrent_downloads[download_id]
+        if info['status'] == 'completed':
+            html = f'<div style="font-family: monospace; padding: 10px;">✅ {info["name"]} - 100% - Completado</div>'
+            del torrent_downloads[download_id]
+            return html
+        elif info['status'] == 'failed':
+            html = f'<div style="font-family: monospace; padding: 10px;">❌ {info["name"]} - Error: {info.get("error", "Desconocido")}</div>'
+            del torrent_downloads[download_id]
+            return html
+        else:
+            progress = info.get('progress', 0)
+            speed = info.get('speed', '0 KB/s')
+            name = info.get('name', 'Desconocido')
+            current_file = info.get('current_file', '')
+            
+            html = f'<div style="font-family: monospace; padding: 10px;">📥 {name} - {progress}% - {speed} - {current_file}</div>'
+            return html
+    
+    active_downloads = []
+    for did, info in torrent_downloads.items():
+        if info['status'] == 'downloading':
+            active_downloads.append({
+                'id': did,
+                'name': info['name'],
+                'progress': info.get('progress', 0),
+                'speed': info.get('speed', '0 KB/s'),
+                'current_file': info.get('current_file', '')
+            })
+    
+    if not active_downloads:
+        return '<div style="font-family: monospace; padding: 10px;">💤 Sin descargas activas</div>'
+    
+    html = '<div style="font-family: monospace; padding: 10px;">'
+    for dl in active_downloads:
+        html += f'📥 {dl["name"]} - {dl["progress"]}% - {dl["speed"]}<br>'
+    html += '</div>'
+    
+    return html
 
 @app.route("/viewer")
 def viewer():
@@ -477,25 +611,25 @@ def view_queue(queue_id):
                 {% endif %}
                 {% if r.data %}
                     <br>
-                    <a href="/viewer?links={{ r.links | tojson | urlencode }}&title={{ r.title }}" target="_blank"><button>Ver</button></a>
-                    <a href="/process_nhentai?codes={{ r.code }}&action=view" target="_blank"><button>Ver Directo NH</button></a>
-                    <a href="/process_3hentai?codes={{ r.code }}&action=view" target="_blank"><button>Ver Directo 3H</button></a>
-                    <form method="post" action="/save_json" style="display:inline;" target="_blank">
+                    <a href="/viewer?links={{ r.links | tojson | urlencode }}&title={{ r.title }}"><button>Ver</button></a>
+                    <a href="/process_nhentai?codes={{ r.code }}&action=view"><button>Ver Directo NH</button></a>
+                    <a href="/process_3hentai?codes={{ r.code }}&action=view"><button>Ver Directo 3H</button></a>
+                    <form method="post" action="/save_json" style="display:inline;">
                         <input type="hidden" name="data" value='{{ r.data | tojson }}'>
                         <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
                         <button type="submit">JSON</button>
                     </form>
-                    <form method="post" action="/save_txt" style="display:inline;" target="_blank">
+                    <form method="post" action="/save_txt" style="display:inline;">
                         <input type="hidden" name="links" value='{{ r.links | tojson }}'>
                         <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
                         <button type="submit">TXT</button>
                     </form>
-                    <form method="post" action="/create_pdf_from_data" style="display:inline;" target="_blank">
+                    <form method="post" action="/create_pdf_from_data" style="display:inline;">
                         <input type="hidden" name="links" value='{{ r.links | tojson }}'>
                         <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
                         <button type="submit">PDF</button>
                     </form>
-                    <form method="post" action="/create_cbz_from_data" style="display:inline;" target="_blank">
+                    <form method="post" action="/create_cbz_from_data" style="display:inline;">
                         <input type="hidden" name="links" value='{{ r.links | tojson }}'>
                         <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
                         <button type="submit">CBZ</button>
@@ -550,25 +684,25 @@ def process_nhentai():
             <h1>Resultado de {codes[0]} (nhentai)</h1>
             <img src="{result.get('cover_image') or result['image_links'][0]}" style="max-width:200px;">
             <pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>
-            <a href="/viewer?links={urllib.parse.quote(links_json)}&title={urllib.parse.quote(title)}" target="_blank"><button>Ver</button></a>
-            <a href="/process_nhentai?codes={codes[0]}&action=view" target="_blank"><button>Ver Directo NH</button></a>
-            <a href="/process_3hentai?codes={codes[0]}&action=view" target="_blank"><button>Ver Directo 3H</button></a>
-            <form method="post" action="/save_json" style="display:inline;" target="_blank">
+            <a href="/viewer?links={urllib.parse.quote(links_json)}&title={urllib.parse.quote(title)}"><button>Ver</button></a>
+            <a href="/process_nhentai?codes={codes[0]}&action=view"><button>Ver Directo NH</button></a>
+            <a href="/process_3hentai?codes={codes[0]}&action=view"><button>Ver Directo 3H</button></a>
+            <form method="post" action="/save_json" style="display:inline;">
                 <input type="hidden" name="data" value='{data_json}'>
                 <input type="hidden" name="filename" value="{base_name}">
                 <button type="submit">JSON</button>
             </form>
-            <form method="post" action="/save_txt" style="display:inline;" target="_blank">
+            <form method="post" action="/save_txt" style="display:inline;">
                 <input type="hidden" name="links" value='{links_json}'>
                 <input type="hidden" name="filename" value="{base_name}">
                 <button type="submit">TXT</button>
             </form>
-            <form method="post" action="/create_pdf_from_data" style="display:inline;" target="_blank">
+            <form method="post" action="/create_pdf_from_data" style="display:inline;">
                 <input type="hidden" name="links" value='{links_json}'>
                 <input type="hidden" name="filename" value="{base_name}">
                 <button type="submit">PDF</button>
             </form>
-            <form method="post" action="/create_cbz_from_data" style="display:inline;" target="_blank">
+            <form method="post" action="/create_cbz_from_data" style="display:inline;">
                 <input type="hidden" name="links" value='{links_json}'>
                 <input type="hidden" name="filename" value="{base_name}">
                 <button type="submit">CBZ</button>
@@ -627,25 +761,25 @@ def process_3hentai():
             <h1>Resultado de {codes[0]} (3hentai)</h1>
             <img src="{result.get('cover_image') or result['image_links'][0]}" style="max-width:200px;">
             <pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>
-            <a href="/viewer?links={urllib.parse.quote(links_json)}&title={urllib.parse.quote(title)}" target="_blank"><button>Ver</button></a>
-            <a href="/process_nhentai?codes={codes[0]}&action=view" target="_blank"><button>Ver Directo NH</button></a>
-            <a href="/process_3hentai?codes={codes[0]}&action=view" target="_blank"><button>Ver Directo 3H</button></a>
-            <form method="post" action="/save_json" style="display:inline;" target="_blank">
+            <a href="/viewer?links={urllib.parse.quote(links_json)}&title={urllib.parse.quote(title)}"><button>Ver</button></a>
+            <a href="/process_nhentai?codes={codes[0]}&action=view"><button>Ver Directo NH</button></a>
+            <a href="/process_3hentai?codes={codes[0]}&action=view"><button>Ver Directo 3H</button></a>
+            <form method="post" action="/save_json" style="display:inline;">
                 <input type="hidden" name="data" value='{data_json}'>
                 <input type="hidden" name="filename" value="{base_name}">
                 <button type="submit">JSON</button>
             </form>
-            <form method="post" action="/save_txt" style="display:inline;" target="_blank">
+            <form method="post" action="/save_txt" style="display:inline;">
                 <input type="hidden" name="links" value='{links_json}'>
                 <input type="hidden" name="filename" value="{base_name}">
                 <button type="submit">TXT</button>
             </form>
-            <form method="post" action="/create_pdf_from_data" style="display:inline;" target="_blank">
+            <form method="post" action="/create_pdf_from_data" style="display:inline;">
                 <input type="hidden" name="links" value='{links_json}'>
                 <input type="hidden" name="filename" value="{base_name}">
                 <button type="submit">PDF</button>
             </form>
-            <form method="post" action="/create_cbz_from_data" style="display:inline;" target="_blank">
+            <form method="post" action="/create_cbz_from_data" style="display:inline;">
                 <input type="hidden" name="links" value='{links_json}'>
                 <input type="hidden" name="filename" value="{base_name}">
                 <button type="submit">CBZ</button>
@@ -682,7 +816,7 @@ def save_json():
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         safe_filename = os.path.basename(json_path)
-        return f"JSON guardado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.json</a><br><a href='/nekotools' target='_blank'>Volver</a>"
+        return f"JSON guardado: <a href='/{urllib.parse.quote(safe_filename)}'>{safe_name}.json</a><br><a href='/nekotools'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/save_txt", methods=["POST"])
@@ -697,7 +831,7 @@ def save_txt():
             for link in links:
                 f.write(f"{link}\n")
         safe_filename = os.path.basename(txt_path)
-        return f"TXT guardado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.txt</a><br><a href='/nekotools' target='_blank'>Volver</a>"
+        return f"TXT guardado: <a href='/{urllib.parse.quote(safe_filename)}'>{safe_name}.txt</a><br><a href='/nekotools'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/create_pdf_from_data", methods=["POST"])
@@ -710,7 +844,7 @@ def create_pdf_from_data():
         if result and os.path.exists(result):
             safe_name = neko_instance.clean_name(filename)
             safe_filename = os.path.basename(result)
-            return f"PDF creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.pdf</a><br><a href='/nekotools' target='_blank'>Volver</a>"
+            return f"PDF creado: <a href='/{urllib.parse.quote(safe_filename)}'>{safe_name}.pdf</a><br><a href='/nekotools'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/create_cbz_from_data", methods=["POST"])
@@ -726,7 +860,7 @@ def create_cbz_from_data():
         if result and os.path.exists(result):
             safe_name = neko_instance.clean_name(filename)
             safe_filename = os.path.basename(result)
-            return f"CBZ creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.cbz</a><br><a href='/nekotools' target='_blank'>Volver</a>"
+            return f"CBZ creado: <a href='/{urllib.parse.quote(safe_filename)}'>{safe_name}.cbz</a><br><a href='/nekotools'>Volver</a>"
     return redirect(url_for("nekotools"))
 
 @app.route("/convert_cover", methods=["POST"])
@@ -756,7 +890,7 @@ def convert_cover():
         with open(save_path, 'wb') as f:
             f.write(img_io.getvalue())
         
-        return f"Cover convertido: <a href='/{urllib.parse.quote(filename)}' target='_blank'>{filename}</a><br><a href='/nekotools' target='_blank'>Volver</a>"
+        return f"Cover convertido: <a href='/{urllib.parse.quote(filename)}'>{filename}</a><br><a href='/nekotools'>Volver</a>"
     except Exception as e:
         return f"Error al convertir: {str(e)}", 500
 
@@ -766,6 +900,8 @@ def search_results():
     search_term = request.args.get("term", "")
     page = request.args.get("page", "1")
     site = request.args.get("site", "nhentai")
+    same_tab = session.get('same_tab', True)
+    target_attr = '' if same_tab else ' target="_blank"'
     
     if not results_json:
         return "No results provided", 400
@@ -783,7 +919,7 @@ def search_results():
             <head><title>Sin resultados</title></head>
             <body>
                 <h1>No se encontraron resultados para "{search_term}"</h1>
-                <p><a href="/nekotools" target="_blank">Volver a NekoTools</a></p>
+                <p><a href="/nekotools">Volver a NekoTools</a></p>
             </body>
             </html>
             '''
@@ -937,6 +1073,7 @@ def search_results():
                     border-radius: 4px;
                     text-decoration: none;
                     color: #007bff;
+                    cursor: pointer;
                 }}
                 .page-link.active {{
                     background-color: #007bff;
@@ -964,16 +1101,32 @@ def search_results():
                     margin-left: 5px;
                 }}
             </style>
+            <script>
+                function navigateToPage(page) {{
+                    fetch(`/search?term={urllib.parse.quote(search_term)}&page=${{page}}&site={site}`, {{
+                        method: 'GET',
+                        headers: {{
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }}
+                    }})
+                    .then(response => response.text())
+                    .then(html => {{
+                        document.open();
+                        document.write(html);
+                        document.close();
+                    }});
+                }}
+            </script>
         </head>
         <body>
-            <a href="/nekotools" class="back-link" target="_blank">← Volver a NekoTools</a>
+            <a href="/nekotools" class="back-link">← Volver a NekoTools</a>
             <h1>Resultados de búsqueda en {site}</h1>
             
             <div class="search-info">
                 <p><strong>Término:</strong> {search_term}</p>
                 <p><strong>Total de resultados:</strong> {total_resultados}</p>
                 <p><strong>Página:</strong> {pagina_actual} de {total_paginas}</p>
-                <p><strong>Nota:</strong> Si las imágenes no se ven, usa el botón "Convertir Cover" que aparece al pasar el mouse sobre cada imagen.</p>
+                <p><strong>Nota:</strong> Si las imágenes no se ven, pasa el mouse sobre cada imagen y haz clic en "Convertir Cover".</p>
             </div>
             
             <div class="results-grid">
@@ -992,7 +1145,7 @@ def search_results():
                     <div class="result-image-container">
                         <img src="{miniatura}" class="result-image" alt="{nombre}" onerror="this.src='https://via.placeholder.com/300x400?text=Sin+imagen'">
                         <div class="convert-overlay">
-                            <form method="post" action="/convert_cover" target="_blank">
+                            <form method="post" action="/convert_cover" style="display:inline;" onsubmit="event.preventDefault(); fetch(this.action, {{method:'POST', body:new FormData(this)}}).then(r=>r.text()).then(t=>{{let msg=document.createElement('div');msg.innerHTML=t;alert('Cover convertido');location.reload();}});">
                                 <input type="hidden" name="image_url" value="{miniatura}">
                                 <input type="hidden" name="code" value="{codigo}">
                                 <input type="hidden" name="site" value="{site}">
@@ -1005,10 +1158,10 @@ def search_results():
                         <span class="site-badge">{site}</span>
                         <div class="result-title">{nombre}</div>
                         <div class="result-actions">
-                            <a href="{process_route}?codes={codigo}&action=view" target="_blank" class="btn btn-view">Ver</a>
-                            <a href="{process_route}?codes={codigo}&action=cbz" target="_blank" class="btn btn-cbz">CBZ</a>
-                            <a href="{process_route}?codes={codigo}&action=pdf" target="_blank" class="btn btn-pdf">PDF</a>
-                            <a href="{process_route}?codes={codigo}&action=view" target="_blank" class="btn btn-direct">Directo</a>
+                            <a href="{process_route}?codes={codigo}&action=view"{target_attr} class="btn btn-view">Ver</a>
+                            <a href="{process_route}?codes={codigo}&action=cbz"{target_attr} class="btn btn-cbz">CBZ</a>
+                            <a href="{process_route}?codes={codigo}&action=pdf"{target_attr} class="btn btn-pdf">PDF</a>
+                            <a href="{process_route}?codes={codigo}&action=view"{target_attr} class="btn btn-direct">Directo</a>
                         </div>
                     </div>
                 </div>
@@ -1027,11 +1180,11 @@ def search_results():
             if p == pagina_actual_int:
                 html += f'<span class="page-link active">{p}</span>'
             else:
-                html += f'<a href="/search?term={urllib.parse.quote(search_term)}&page={p}&site={site}" class="page-link" target="_blank">{p}</a>'
+                html += f'<a href="#" class="page-link" onclick="navigateToPage({p}); return false;">{p}</a>'
         
         if total_paginas_int > 10:
             html += '<span class="page-link">...</span>'
-            html += f'<a href="/search?term={urllib.parse.quote(search_term)}&page={total_paginas_int}&site={site}" class="page-link" target="_blank">{total_paginas_int}</a>'
+            html += f'<a href="#" class="page-link" onclick="navigateToPage({total_paginas_int}); return false;">{total_paginas_int}</a>'
         
         html += '''
             </div>
@@ -1064,7 +1217,7 @@ def search():
     
     if isinstance(resultado, dict):
         if "error" in resultado:
-            return f"Error en búsqueda: {resultado['error']}<br><a href='/nekotools' target='_blank'>Volver</a>"
+            return f"Error en búsqueda: {resultado['error']}<br><a href='/nekotools'>Volver</a>"
         
         if "resultados" in resultado:
             return redirect(url_for("search_results", 
@@ -1073,7 +1226,7 @@ def search():
                                   page=page,
                                   site=site))
     
-    return f"Error: formato de respuesta inesperado<br><a href='/nekotools' target='_blank'>Volver</a>"
+    return f"Error: formato de respuesta inesperado<br><a href='/nekotools'>Volver</a>"
 
 @app.route("/nekotools", methods=["GET", "POST"])
 def nekotools():
@@ -1082,14 +1235,45 @@ def nekotools():
     if request.method == "POST":
         action = request.form.get("action")
         
-        if action == "download_from_json":
+        if action == "torrent":
+            magnet_link = request.form.get("torrent_magnet")
+            if magnet_link:
+                download_id = str(uuid.uuid4())[:8]
+                torrent_name = request.form.get("torrent_name", "torrent")
+                
+                download_path = os.path.join(BASE_DIR, "torrents", download_id)
+                os.makedirs(download_path, exist_ok=True)
+                
+                torrent_downloads[download_id] = {
+                    'id': download_id,
+                    'name': torrent_name,
+                    'status': 'starting',
+                    'progress': 0,
+                    'speed': '0 KB/s',
+                    'current_file': '',
+                    'path': download_path
+                }
+                
+                thread = threading.Thread(target=download_torrent_thread, args=(download_id, magnet_link, download_path))
+                thread.daemon = True
+                thread.start()
+                
+                return f'''
+                <h2>Descarga iniciada</h2>
+                <p>ID: {download_id}</p>
+                <p>Nombre: {torrent_name}</p>
+                <p>Monitorear progreso: <a href="/tdl?id={download_id}">/tdl?id={download_id}</a></p>
+                <p><a href="/nekotools">Volver</a></p>
+                '''
+        
+        elif action == "download_from_json":
             json_file = request.files.get("json_file")
             if json_file:
                 try:
                     data = json.load(json_file)
-                    return f"JSON cargado: {len(data)} items<br><a href='/nekotools' target='_blank'>Volver</a>"
+                    return f"JSON cargado: {len(data)} items<br><a href='/nekotools'>Volver</a>"
                 except:
-                    return "Error al cargar JSON<br><a href='/nekotools' target='_blank'>Volver</a>"
+                    return "Error al cargar JSON<br><a href='/nekotools'>Volver</a>"
         
         elif action == "download_from_txt":
             txt_file = request.files.get("txt_file")
@@ -1098,9 +1282,9 @@ def nekotools():
                 try:
                     content = txt_file.read().decode('utf-8')
                     lines = [line.strip() for line in content.split('\n') if line.strip()]
-                    return f"TXT cargado: {len(lines)} lineas, carpeta: {folder_name}<br><a href='/nekotools' target='_blank'>Volver</a>"
+                    return f"TXT cargado: {len(lines)} lineas, carpeta: {folder_name}<br><a href='/nekotools'>Volver</a>"
                 except:
-                    return "Error al cargar TXT<br><a href='/nekotools' target='_blank'>Volver</a>"
+                    return "Error al cargar TXT<br><a href='/nekotools'>Volver</a>"
         
         elif action == "download":
             url = request.form.get("download_url")
@@ -1109,9 +1293,9 @@ def nekotools():
                 save_path = os.path.join(BASE_DIR, secure_filename(name))
                 if neko_instance.download(url, save_path):
                     safe_filename = os.path.basename(save_path)
-                    return f"Archivo descargado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{name}</a><br><a href='/nekotools' target='_blank'>Volver</a>"
+                    return f"Archivo descargado: <a href='/{urllib.parse.quote(safe_filename)}'>{name}</a><br><a href='/nekotools'>Volver</a>"
                 else:
-                    return "Error al descargar<br><a href='/nekotools' target='_blank'>Volver</a>"
+                    return "Error al descargar<br><a href='/nekotools'>Volver</a>"
         
         elif action == "convert_png":
             files = request.files.getlist("file")
@@ -1121,7 +1305,7 @@ def nekotools():
                     result = neko_instance.convert_to_png(file)
                     if result:
                         converted.append(result)
-            return f"Convertidos: {len(converted)} archivos<br><a href='/nekotools' target='_blank'>Volver</a>"
+            return f"Convertidos: {len(converted)} archivos<br><a href='/nekotools'>Volver</a>"
         
         elif action == "create_cbz":
             name = request.form.get("cbz_name")
@@ -1135,9 +1319,9 @@ def nekotools():
                 if result:
                     safe_name = neko_instance.clean_name(name)
                     safe_filename = os.path.basename(result)
-                    return f"CBZ creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.cbz</a><br><a href='/nekotools' target='_blank'>Volver</a>"
+                    return f"CBZ creado: <a href='/{urllib.parse.quote(safe_filename)}'>{safe_name}.cbz</a><br><a href='/nekotools'>Volver</a>'
                 else:
-                    return "Error al crear CBZ<br><a href='/nekotools' target='_blank'>Volver</a>"
+                    return "Error al crear CBZ<br><a href='/nekotools'>Volver</a>"
         
         elif action == "create_pdf":
             name = request.form.get("pdf_name")
@@ -1148,9 +1332,9 @@ def nekotools():
                 if result:
                     safe_name = neko_instance.clean_name(name)
                     safe_filename = os.path.basename(result)
-                    return f"PDF creado: <a href='/{urllib.parse.quote(safe_filename)}' target='_blank'>{safe_name}.pdf</a><br><a href='/nekotools' target='_blank'>Volver</a>"
+                    return f"PDF creado: <a href='/{urllib.parse.quote(safe_filename)}'>{safe_name}.pdf</a><br><a href='/nekotools'>Volver</a>'
                 else:
-                    return "Error al crear PDF<br><a href='/nekotools' target='_blank'>Volver</a>"
+                    return "Error al crear PDF<br><a href='/nekotools'>Volver</a>"
         
         elif action == "snh" or action == "s3h":
             search_term = request.form.get("snh_search") if action == "snh" else request.form.get("s3h_search")
@@ -1168,8 +1352,21 @@ def nekotools():
     html = '''
     <h1>NekoTools</h1>
     
+    <h2>Descargar Torrent / Magnet</h2>
+    <form method="post">
+        Nombre: <input type="text" name="torrent_name" placeholder="Nombre del torrent" required>
+        <br>
+        Magnet Link: <input type="text" name="torrent_magnet" placeholder="magnet:?xt=urn:btih:..." size="60" required>
+        <input type="hidden" name="action" value="torrent">
+        <br>
+        <button type="submit">Iniciar Descarga</button>
+    </form>
+    <p>Monitorear progreso: <a href="/tdl">/tdl</a> (actualizar automáticamente)</p>
+    
+    <hr>
+    
     <h2>nhentai</h2>
-    <form method="post" action="/process_nhentai" target="_blank">
+    <form method="post" action="/process_nhentai">
         Codigos: <textarea name="codes" rows="3" cols="50" placeholder="318156 o 318156 318157 318158"></textarea>
         <br>
         <button type="submit" name="action" value="view">Ver</button>
@@ -1178,7 +1375,7 @@ def nekotools():
     </form>
     
     <h2>3hentai</h2>
-    <form method="post" action="/process_3hentai" target="_blank">
+    <form method="post" action="/process_3hentai">
         Codigos: <textarea name="codes" rows="3" cols="50" placeholder="318156 o 318156 318157 318158"></textarea>
         <br>
         <button type="submit" name="action" value="view">Ver</button>
@@ -1187,14 +1384,14 @@ def nekotools():
     </form>
     
     <h2>Descargar desde JSON</h2>
-    <form method="post" enctype="multipart/form-data" target="_blank">
+    <form method="post" enctype="multipart/form-data">
         <input type="file" name="json_file" accept=".json">
         <input type="hidden" name="action" value="download_from_json">
         <button type="submit">Descargar imagenes desde JSON</button>
     </form>
     
     <h2>Descargar desde TXT</h2>
-    <form method="post" enctype="multipart/form-data" target="_blank">
+    <form method="post" enctype="multipart/form-data">
         <input type="file" name="txt_file" accept=".txt">
         <br>
         Nombre de carpeta: <input type="text" name="txt_folder" placeholder="Nombre para la carpeta">
@@ -1203,7 +1400,7 @@ def nekotools():
     </form>
     
     <h2>Descargar Archivo</h2>
-    <form method="post" target="_blank">
+    <form method="post">
         URL: <input type="text" name="download_url" placeholder="URL del archivo">
         <br>
         Nombre: <input type="text" name="download_name" placeholder="Nombre del archivo">
@@ -1212,14 +1409,14 @@ def nekotools():
     </form>
     
     <h2>Convertir a PNG</h2>
-    <form method="post" enctype="multipart/form-data" target="_blank">
+    <form method="post" enctype="multipart/form-data">
         <input type="file" name="file" multiple>
         <input type="hidden" name="action" value="convert_png">
         <button type="submit">Convertir</button>
     </form>
     
     <h2>Crear CBZ</h2>
-    <form method="post" target="_blank">
+    <form method="post">
         Nombre: <input type="text" name="cbz_name" placeholder="Nombre del archivo">
         <br>
         Lista (URLs o paths, uno por linea):<br>
@@ -1229,7 +1426,7 @@ def nekotools():
     </form>
     
     <h2>Crear PDF</h2>
-    <form method="post" target="_blank">
+    <form method="post">
         Nombre: <input type="text" name="pdf_name" placeholder="Nombre del archivo">
         <br>
         Lista (URLs o paths, uno por linea):<br>
@@ -1239,7 +1436,7 @@ def nekotools():
     </form>
     
     <h2>Buscar en nhentai</h2>
-    <form method="post" target="_blank">
+    <form method="post">
         Termino: <input type="text" name="snh_search" placeholder="Termino de busqueda">
         <br>
         Pagina: <input type="number" name="snh_page" value="1" min="1">
@@ -1248,7 +1445,7 @@ def nekotools():
     </form>
     
     <h2>Buscar en 3hentai</h2>
-    <form method="post" target="_blank">
+    <form method="post">
         Termino: <input type="text" name="s3h_search" placeholder="Termino de busqueda">
         <br>
         Pagina: <input type="number" name="s3h_page" value="1" min="1">
