@@ -1145,7 +1145,7 @@ def search_results():
                     <div class="result-image-container">
                         <img src="{miniatura}" class="result-image" alt="{nombre}" onerror="this.src='https://via.placeholder.com/300x400?text=Sin+imagen'">
                         <div class="convert-overlay">
-                            <form method="post" action="/convert_cover" style="display:inline;" onsubmit="event.preventDefault(); fetch(this.action, {{method:'POST', body:new FormData(this)}}).then(r=>r.text()).then(t=>{{let msg=document.createElement('div');msg.innerHTML=t;alert('Cover convertido');location.reload();}});">
+                            <form method="post" action="/convert_cover" style="display:inline;" onsubmit="event.preventDefault(); fetch(this.action, {{method:'POST', body:new FormData(this)}}).then(r=>r.text()).then(t=>{{alert('Cover convertido'); location.reload();}});">
                                 <input type="hidden" name="image_url" value="{miniatura}">
                                 <input type="hidden" name="code" value="{codigo}">
                                 <input type="hidden" name="site" value="{site}">
