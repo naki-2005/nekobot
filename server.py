@@ -10,7 +10,7 @@ import tempfile
 import shutil
 import zipfile
 import requests
-from flask import Flask, request, redirect, url_for, send_file, render_template_string, session
+from flask import Flask, request, redirect, url_for, send_file, session
 from werkzeug.utils import secure_filename
 from neko import Neko
 from PIL import Image
@@ -256,6 +256,475 @@ def download_torrent_thread(download_id, magnet_link, download_path):
         torrent_downloads[download_id]['status'] = 'failed'
         torrent_downloads[download_id]['error'] = str(e)
 
+INDEX_HTML = '''
+<h1>Contenido de {{path}}</h1>
+<form method="post" action="/toggle_same_tab" style="margin-bottom: 10px;">
+    <button type="submit">Abrir Links en la Pestaña Actual: {{same_tab_status}}</button>
+</form>
+<form method="get" style="margin-bottom: 20px;">
+    <input type="hidden" name="preview" value="{{preview_value}}">
+    <button type="submit">{{preview_button}}</button>
+</form>
+<form method="post" action="/upload" enctype="multipart/form-data">
+    <input type="file" name="file" multiple>
+    <button type="submit">Subir</button>
+</form>
+<div>
+    <button type="button" id="selectAllBtn" onclick="selectAll()">Seleccionar Todo</button>
+    <button type="button" id="deselectAllBtn" onclick="deselectAll()" style="display:none;">Deseleccionar Todo</button>
+    <button type="button" id="selectRangeBtn" onclick="selectRange()" style="display:none;">Seleccionar Intervalo</button>
+    <button type="button" id="deleteSelectedBtn" onclick="deleteSelected()" style="display:none;">Borrar Seleccionados</button>
+</div>
+<ul>{{links|safe}}</ul>
+<script>
+function updateButtons() {
+    var checkboxes = document.getElementsByClassName('file-checkbox');
+    var anyChecked = false;
+    var allChecked = true;
+    var checkedCount = 0;
+    for(var i=0; i<checkboxes.length; i++) {
+        if(checkboxes[i].checked) {
+            anyChecked = true;
+            checkedCount++;
+        } else {
+            allChecked = false;
+        }
+    }
+    var selectAllBtn = document.getElementById('selectAllBtn');
+    var deselectAllBtn = document.getElementById('deselectAllBtn');
+    var selectRangeBtn = document.getElementById('selectRangeBtn');
+    var deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+    if(allChecked && checkboxes.length > 0) {
+        selectAllBtn.style.display = 'none';
+        deselectAllBtn.style.display = 'inline';
+    } else {
+        selectAllBtn.style.display = 'inline';
+        deselectAllBtn.style.display = 'none';
+    }
+    if(checkedCount >= 2) {
+        selectRangeBtn.style.display = 'inline';
+    } else {
+        selectRangeBtn.style.display = 'none';
+    }
+    if(checkedCount >= 1) {
+        deleteSelectedBtn.style.display = 'inline';
+    } else {
+        deleteSelectedBtn.style.display = 'none';
+    }
+}
+function selectAll() {
+    var checkboxes = document.getElementsByClassName('file-checkbox');
+    for(var i=0; i<checkboxes.length; i++) {
+        checkboxes[i].checked = true;
+    }
+    updateButtons();
+}
+function deselectAll() {
+    var checkboxes = document.getElementsByClassName('file-checkbox');
+    for(var i=0; i<checkboxes.length; i++) {
+        checkboxes[i].checked = false;
+    }
+    updateButtons();
+}
+function selectRange() {
+    var checkboxes = document.getElementsByClassName('file-checkbox');
+    var selected = [];
+    for(var i=0; i<checkboxes.length; i++) {
+        if(checkboxes[i].checked) {
+            selected.push(i);
+        }
+    }
+    if(selected.length >= 2) {
+        var first = selected[0];
+        var last = selected[selected.length-1];
+        var min = Math.min(first, last);
+        var max = Math.max(first, last);
+        for(var i=min; i<=max; i++) {
+            checkboxes[i].checked = true;
+        }
+    }
+    updateButtons();
+}
+function deleteSelected() {
+    var checkboxes = document.getElementsByClassName('file-checkbox');
+    var selected = [];
+    for(var i=0; i<checkboxes.length; i++) {
+        if(checkboxes[i].checked) {
+            selected.push(checkboxes[i].value);
+        }
+    }
+    if(selected.length > 0) {
+        var form = document.createElement('form');
+        form.method = 'post';
+        form.action = '/delete_multiple';
+        for(var j=0; j<selected.length; j++) {
+            var input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'paths';
+            input.value = selected[j];
+            form.appendChild(input);
+        }
+        document.body.appendChild(form);
+        form.submit();
+    }
+}
+updateButtons();
+</script>
+'''
+
+VIEWER_HTML = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{title}}</title>
+    <style>
+        body { margin: 0; padding: 20px 0; background-color: #f0f0f0; }
+        .image-container { display: flex; flex-direction: column; align-items: center; gap: 20px; }
+        .image-container img { max-width: 100%; height: auto; display: block; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body>
+    <div class="image-container">
+        {% for link in links %}
+        <img src="{{link}}">
+        {% endfor %}
+    </div>
+</body>
+</html>
+'''
+
+QUEUE_PROCESSING_HTML = '''
+<h1>Procesando...</h1>
+<p>Progreso: {{ current }}/{{ total }}</p>
+<p>Codigo actual: {{ current_code }}</p>
+<p><a href="/queue/{{ queue_id }}">Actualizar</a></p>
+'''
+
+QUEUE_COMPLETED_HTML = '''
+<h1>Proceso Completado</h1>
+<p>Total: {{ total }} codigos</p>
+<p>Exitosos: {{ successful }} | Fallidos: {{ failed }}</p>
+<h2>Resultados:</h2>
+<ul>
+{% for r in results %}
+    <li>
+        <b>{{ r.code }}</b> - {{ r.title if r.success else 'FALLIDO' }}
+        {% if r.success and r.cover %}
+            <br><img src="{{ r.cover }}" style="max-width:100px;">
+        {% endif %}
+        {% if not r.success %}
+            <br>Error: {{ r.error }}
+        {% endif %}
+        {% if r.data %}
+            <br>
+            <a href="/viewer?links={{ r.links | tojson | urlencode }}&title={{ r.title }}"><button>Ver</button></a>
+            <a href="/process_nhentai?codes={{ r.code }}&action=view"><button>Ver Directo NH</button></a>
+            <a href="/process_3hentai?codes={{ r.code }}&action=view"><button>Ver Directo 3H</button></a>
+            <form method="post" action="/save_json" style="display:inline;">
+                <input type="hidden" name="data" value='{{ r.data | tojson }}'>
+                <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
+                <button type="submit">JSON</button>
+            </form>
+            <form method="post" action="/save_txt" style="display:inline;">
+                <input type="hidden" name="links" value='{{ r.links | tojson }}'>
+                <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
+                <button type="submit">TXT</button>
+            </form>
+            <form method="post" action="/create_pdf_from_data" style="display:inline;">
+                <input type="hidden" name="links" value='{{ r.links | tojson }}'>
+                <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
+                <button type="submit">PDF</button>
+            </form>
+            <form method="post" action="/create_cbz_from_data" style="display:inline;">
+                <input type="hidden" name="links" value='{{ r.links | tojson }}'>
+                <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
+                <button type="submit">CBZ</button>
+            </form>
+        {% endif %}
+    </li>
+{% endfor %}
+</ul>
+<p><a href="/">Volver al inicio</a></p>
+'''
+
+NH_RESULT_HTML = '''
+<h1>Resultado de {{code}} (nhentai)</h1>
+<img src="{{cover}}" style="max-width:200px;">
+<pre>{{data}}</pre>
+<a href="/viewer?links={{links}}&title={{title}}"><button>Ver</button></a>
+<a href="/process_nhentai?codes={{code}}&action=view"><button>Ver Directo NH</button></a>
+<a href="/process_3hentai?codes={{code}}&action=view"><button>Ver Directo 3H</button></a>
+<form method="post" action="/save_json" style="display:inline;">
+    <input type="hidden" name="data" value='{{data_json}}'>
+    <input type="hidden" name="filename" value="{{base_name}}">
+    <button type="submit">JSON</button>
+</form>
+<form method="post" action="/save_txt" style="display:inline;">
+    <input type="hidden" name="links" value='{{links}}'>
+    <input type="hidden" name="filename" value="{{base_name}}">
+    <button type="submit">TXT</button>
+</form>
+<form method="post" action="/create_pdf_from_data" style="display:inline;">
+    <input type="hidden" name="links" value='{{links}}'>
+    <input type="hidden" name="filename" value="{{base_name}}">
+    <button type="submit">PDF</button>
+</form>
+<form method="post" action="/create_cbz_from_data" style="display:inline;">
+    <input type="hidden" name="links" value='{{links}}'>
+    <input type="hidden" name="filename" value="{{base_name}}">
+    <button type="submit">CBZ</button>
+</form>
+<p><a href="/nekotools">Volver</a></p>
+'''
+
+TH_RESULT_HTML = '''
+<h1>Resultado de {{code}} (3hentai)</h1>
+<img src="{{cover}}" style="max-width:200px;">
+<pre>{{data}}</pre>
+<a href="/viewer?links={{links}}&title={{title}}"><button>Ver</button></a>
+<a href="/process_nhentai?codes={{code}}&action=view"><button>Ver Directo NH</button></a>
+<a href="/process_3hentai?codes={{code}}&action=view"><button>Ver Directo 3H</button></a>
+<form method="post" action="/save_json" style="display:inline;">
+    <input type="hidden" name="data" value='{{data_json}}'>
+    <input type="hidden" name="filename" value="{{base_name}}">
+    <button type="submit">JSON</button>
+</form>
+<form method="post" action="/save_txt" style="display:inline;">
+    <input type="hidden" name="links" value='{{links}}'>
+    <input type="hidden" name="filename" value="{{base_name}}">
+    <button type="submit">TXT</button>
+</form>
+<form method="post" action="/create_pdf_from_data" style="display:inline;">
+    <input type="hidden" name="links" value='{{links}}'>
+    <input type="hidden" name="filename" value="{{base_name}}">
+    <button type="submit">PDF</button>
+</form>
+<form method="post" action="/create_cbz_from_data" style="display:inline;">
+    <input type="hidden" name="links" value='{{links}}'>
+    <input type="hidden" name="filename" value="{{base_name}}">
+    <button type="submit">CBZ</button>
+</form>
+<p><a href="/nekotools">Volver</a></p>
+'''
+
+SEARCH_RESULTS_HTML = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Resultados de búsqueda: {{search_term}}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+        h1 { color: #333; }
+        .search-info { background-color: #fff; padding: 15px; border-radius: 5px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .results-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; margin-top: 20px; }
+        .result-card { background-color: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); transition: transform 0.3s ease; }
+        .result-card:hover { transform: translateY(-5px); box-shadow: 0 5px 20px rgba(0,0,0,0.2); }
+        .result-image-container { position: relative; width: 100%; height: 300px; }
+        .result-image { width: 100%; height: 300px; object-fit: cover; border-bottom: 1px solid #eee; }
+        .convert-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; opacity: 0; transition: opacity 0.3s ease; }
+        .result-image-container:hover .convert-overlay { opacity: 1; }
+        .convert-btn { background-color: #ffc107; color: #333; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; font-size: 14px; }
+        .result-info { padding: 15px; }
+        .result-code { background-color: #007bff; color: white; display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 12px; margin-bottom: 8px; }
+        .site-badge { background-color: #6c757d; color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-left: 5px; }
+        .result-title { font-size: 14px; line-height: 1.4; margin-bottom: 10px; max-height: 60px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+        .result-actions { display: flex; gap: 5px; margin-top: 10px; flex-wrap: wrap; }
+        .btn { flex: 1; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; text-align: center; text-decoration: none; display: inline-block; min-width: 60px; }
+        .btn-view { background-color: #28a745; color: white; }
+        .btn-cbz { background-color: #ffc107; color: #333; }
+        .btn-pdf { background-color: #dc3545; color: white; }
+        .btn-direct { background-color: #17a2b8; color: white; }
+        .pagination { display: flex; justify-content: center; gap: 10px; margin-top: 30px; margin-bottom: 30px; flex-wrap: wrap; }
+        .page-link { padding: 8px 15px; background-color: #fff; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; color: #007bff; cursor: pointer; }
+        .page-link.active { background-color: #007bff; color: white; border-color: #007bff; }
+        .page-link:hover { background-color: #f0f0f0; }
+        .back-link { display: inline-block; margin-bottom: 20px; color: #007bff; text-decoration: none; }
+        .back-link:hover { text-decoration: underline; }
+    </style>
+    <script>
+        function navigateToPage(page) {
+            fetch('/search?term={{search_term}}&page=' + page + '&site={{site}}', {
+                method: 'GET',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+            .then(response => response.text())
+            .then(html => {
+                document.open();
+                document.write(html);
+                document.close();
+            });
+        }
+        function convertCover(imgUrl, code, site) {
+            var formData = new FormData();
+            formData.append('image_url', imgUrl);
+            formData.append('code', code);
+            formData.append('site', site);
+            fetch('/convert_cover', {
+                method: 'POST',
+                body: formData
+            }).then(response => response.text()).then(() => {
+                alert('Cover convertido');
+                location.reload();
+            });
+        }
+    </script>
+</head>
+<body>
+    <a href="/nekotools" class="back-link">← Volver a NekoTools</a>
+    <h1>Resultados de búsqueda en {{site}}</h1>
+    <div class="search-info">
+        <p><strong>Término:</strong> {{search_term}}</p>
+        <p><strong>Total de resultados:</strong> {{total_resultados}}</p>
+        <p><strong>Página:</strong> {{pagina_actual}} de {{total_paginas}}</p>
+    </div>
+    <div class="results-grid">
+        {% for r in resultados %}
+        <div class="result-card">
+            <div class="result-image-container">
+                <img src="{{r.miniatura}}" class="result-image" alt="{{r.nombre}}" onerror="this.src='https://via.placeholder.com/300x400?text=Sin+imagen'">
+                <div class="convert-overlay">
+                    <button onclick="convertCover('{{r.miniatura}}', '{{r.codigo}}', '{{site}}')" class="convert-btn">Convertir Cover</button>
+                </div>
+            </div>
+            <div class="result-info">
+                <span class="result-code">{{r.codigo}}</span>
+                <span class="site-badge">{{site}}</span>
+                <div class="result-title">{{r.nombre}}</div>
+                <div class="result-actions">
+                    <a href="{{process_route}}?codes={{r.codigo}}&action=view"{{target_attr}} class="btn btn-view">Ver</a>
+                    <a href="{{process_route}}?codes={{r.codigo}}&action=cbz"{{target_attr}} class="btn btn-cbz">CBZ</a>
+                    <a href="{{process_route}}?codes={{r.codigo}}&action=pdf"{{target_attr}} class="btn btn-pdf">PDF</a>
+                    <a href="{{process_route}}?codes={{r.codigo}}&action=view"{{target_attr}} class="btn btn-direct">Directo</a>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    <div class="pagination">
+        {% for p in pagination_range %}
+            {% if p == pagina_actual_int %}
+                <span class="page-link active">{{p}}</span>
+            {% else %}
+                <a href="#" class="page-link" onclick="navigateToPage({{p}}); return false;">{{p}}</a>
+            {% endif %}
+        {% endfor %}
+        {% if show_ellipsis %}
+            <span class="page-link">...</span>
+            <a href="#" class="page-link" onclick="navigateToPage({{total_paginas_int}}); return false;">{{total_paginas_int}}</a>
+        {% endif %}
+    </div>
+</body>
+</html>
+'''
+
+NEKOTOOLS_HTML = '''
+<h1>NekoTools</h1>
+
+<h2>Descargar Torrent / Magnet</h2>
+<form method="post">
+    Nombre: <input type="text" name="torrent_name" placeholder="Nombre del torrent" required>
+    <br>
+    Magnet Link: <input type="text" name="torrent_magnet" placeholder="magnet:?xt=urn:btih:..." size="60" required>
+    <input type="hidden" name="action" value="torrent">
+    <br>
+    <button type="submit">Iniciar Descarga</button>
+</form>
+<p>Monitorear progreso: <a href="/tdl">/tdl</a> (actualizar automáticamente)</p>
+
+<hr>
+
+<h2>nhentai</h2>
+<form method="post" action="/process_nhentai">
+    Codigos: <textarea name="codes" rows="3" cols="50" placeholder="318156 o 318156 318157 318158"></textarea>
+    <br>
+    <button type="submit" name="action" value="view">Ver</button>
+    <button type="submit" name="action" value="cbz">Crear CBZ</button>
+    <button type="submit" name="action" value="pdf">Crear PDF</button>
+</form>
+
+<h2>3hentai</h2>
+<form method="post" action="/process_3hentai">
+    Codigos: <textarea name="codes" rows="3" cols="50" placeholder="318156 o 318156 318157 318158"></textarea>
+    <br>
+    <button type="submit" name="action" value="view">Ver</button>
+    <button type="submit" name="action" value="cbz">Crear CBZ</button>
+    <button type="submit" name="action" value="pdf">Crear PDF</button>
+</form>
+
+<h2>Descargar desde JSON</h2>
+<form method="post" enctype="multipart/form-data">
+    <input type="file" name="json_file" accept=".json">
+    <input type="hidden" name="action" value="download_from_json">
+    <button type="submit">Descargar imagenes desde JSON</button>
+</form>
+
+<h2>Descargar desde TXT</h2>
+<form method="post" enctype="multipart/form-data">
+    <input type="file" name="txt_file" accept=".txt">
+    <br>
+    Nombre de carpeta: <input type="text" name="txt_folder" placeholder="Nombre para la carpeta">
+    <input type="hidden" name="action" value="download_from_txt">
+    <button type="submit">Descargar imagenes desde TXT</button>
+</form>
+
+<h2>Descargar Archivo</h2>
+<form method="post">
+    URL: <input type="text" name="download_url" placeholder="URL del archivo">
+    <br>
+    Nombre: <input type="text" name="download_name" placeholder="Nombre del archivo">
+    <input type="hidden" name="action" value="download">
+    <button type="submit">Descargar</button>
+</form>
+
+<h2>Convertir a PNG</h2>
+<form method="post" enctype="multipart/form-data">
+    <input type="file" name="file" multiple>
+    <input type="hidden" name="action" value="convert_png">
+    <button type="submit">Convertir</button>
+</form>
+
+<h2>Crear CBZ</h2>
+<form method="post">
+    Nombre: <input type="text" name="cbz_name" placeholder="Nombre del archivo">
+    <br>
+    Lista (URLs o paths, uno por linea):<br>
+    <textarea name="cbz_list" rows="5" cols="50"></textarea>
+    <input type="hidden" name="action" value="create_cbz">
+    <button type="submit">Crear CBZ</button>
+</form>
+
+<h2>Crear PDF</h2>
+<form method="post">
+    Nombre: <input type="text" name="pdf_name" placeholder="Nombre del archivo">
+    <br>
+    Lista (URLs o paths, uno por linea):<br>
+    <textarea name="pdf_list" rows="5" cols="50"></textarea>
+    <input type="hidden" name="action" value="create_pdf">
+    <button type="submit">Crear PDF</button>
+</form>
+
+<h2>Buscar en nhentai</h2>
+<form method="post">
+    Termino: <input type="text" name="snh_search" placeholder="Termino de busqueda">
+    <br>
+    Pagina: <input type="number" name="snh_page" value="1" min="1">
+    <input type="hidden" name="action" value="snh">
+    <button type="submit">Buscar SNH</button>
+</form>
+
+<h2>Buscar en 3hentai</h2>
+<form method="post">
+    Termino: <input type="text" name="s3h_search" placeholder="Termino de busqueda">
+    <br>
+    Pagina: <input type="number" name="s3h_page" value="1" min="1">
+    <input type="hidden" name="action" value="s3h">
+    <button type="submit">Buscar S3H</button>
+</form>
+
+<h2>Resultado:</h2>
+<pre>{{result_text}}</pre>
+'''
+
 @app.route("/", defaults={"req_path": ""})
 @app.route("/<path:req_path>")
 def dir_listing(req_path):
@@ -310,146 +779,15 @@ def dir_listing(req_path):
                 )
     
     same_tab_status = "activado" if same_tab else "desactivado"
-    same_tab_button = f'''
-    <form method="post" action="/toggle_same_tab" style="margin-bottom: 10px;">
-        <button type="submit">Abrir Links en la Pestaña Actual: {same_tab_status}</button>
-    </form>
-    '''
+    preview_button = "Modo Descarga" if preview_mode else "Modo Preview"
+    preview_value = "false" if preview_mode else "true"
     
-    toggle_button = f'''
-    <form method="get" style="margin-bottom: 20px;">
-        <input type="hidden" name="preview" value="{str(not preview_mode).lower()}">
-        <button type="submit">{"Modo Descarga" if preview_mode else "Modo Preview"}</button>
-    </form>
-    '''
-    
-    upload_form = '''
-    <form method="post" action="/upload" enctype="multipart/form-data">
-        <input type="file" name="file" multiple>
-        <button type="submit">Subir</button>
-    </form>
-    '''
-    
-    selection_buttons = '''
-    <div>
-        <button type="button" id="selectAllBtn" onclick="selectAll()">Seleccionar Todo</button>
-        <button type="button" id="deselectAllBtn" onclick="deselectAll()" style="display:none;">Deseleccionar Todo</button>
-        <button type="button" id="selectRangeBtn" onclick="selectRange()" style="display:none;">Seleccionar Intervalo</button>
-        <button type="button" id="deleteSelectedBtn" onclick="deleteSelected()" style="display:none;">Borrar Seleccionados</button>
-    </div>
-    '''
-    
-    script = '''
-    <script>
-    function updateButtons() {
-        var checkboxes = document.getElementsByClassName('file-checkbox');
-        var anyChecked = false;
-        var allChecked = true;
-        var checkedCount = 0;
-        
-        for(var i=0; i<checkboxes.length; i++) {
-            if(checkboxes[i].checked) {
-                anyChecked = true;
-                checkedCount++;
-            } else {
-                allChecked = false;
-            }
-        }
-        
-        var selectAllBtn = document.getElementById('selectAllBtn');
-        var deselectAllBtn = document.getElementById('deselectAllBtn');
-        var selectRangeBtn = document.getElementById('selectRangeBtn');
-        var deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
-        
-        if(allChecked && checkboxes.length > 0) {
-            selectAllBtn.style.display = 'none';
-            deselectAllBtn.style.display = 'inline';
-        } else {
-            selectAllBtn.style.display = 'inline';
-            deselectAllBtn.style.display = 'none';
-        }
-        
-        if(checkedCount >= 2) {
-            selectRangeBtn.style.display = 'inline';
-        } else {
-            selectRangeBtn.style.display = 'none';
-        }
-        
-        if(checkedCount >= 1) {
-            deleteSelectedBtn.style.display = 'inline';
-        } else {
-            deleteSelectedBtn.style.display = 'none';
-        }
-    }
-    
-    function selectAll() {
-        var checkboxes = document.getElementsByClassName('file-checkbox');
-        for(var i=0; i<checkboxes.length; i++) {
-            checkboxes[i].checked = true;
-        }
-        updateButtons();
-    }
-    
-    function deselectAll() {
-        var checkboxes = document.getElementsByClassName('file-checkbox');
-        for(var i=0; i<checkboxes.length; i++) {
-            checkboxes[i].checked = false;
-        }
-        updateButtons();
-    }
-    
-    function selectRange() {
-        var checkboxes = document.getElementsByClassName('file-checkbox');
-        var selected = [];
-        for(var i=0; i<checkboxes.length; i++) {
-            if(checkboxes[i].checked) {
-                selected.push(i);
-            }
-        }
-        if(selected.length >= 2) {
-            var first = selected[0];
-            var last = selected[selected.length-1];
-            var min = Math.min(first, last);
-            var max = Math.max(first, last);
-            for(var i=min; i<=max; i++) {
-                checkboxes[i].checked = true;
-            }
-        }
-        updateButtons();
-    }
-    
-    function deleteSelected() {
-        var checkboxes = document.getElementsByClassName('file-checkbox');
-        var selected = [];
-        for(var i=0; i<checkboxes.length; i++) {
-            if(checkboxes[i].checked) {
-                selected.push(checkboxes[i].value);
-            }
-        }
-        if(selected.length > 0) {
-            var form = document.createElement('form');
-            form.method = 'post';
-            form.action = '/delete_multiple';
-            for(var j=0; j<selected.length; j++) {
-                var input = document.createElement('input');
-                input.type = 'hidden';
-                input.name = 'paths';
-                input.value = selected[j];
-                form.appendChild(input);
-            }
-            document.body.appendChild(form);
-            form.submit();
-        }
-    }
-    
-    updateButtons();
-    </script>
-    '''
-    
-    return render_template_string(
-        "<h1>Contenido de {{path}}</h1>{{same_tab|safe}}{{toggle|safe}}{{selection|safe}}<ul>{{links|safe}}</ul>{{upload|safe}}{{script|safe}}",
-        path=req_path or "/", links="".join(file_links), upload=upload_form, toggle=toggle_button, selection=selection_buttons, script=script, same_tab=same_tab_button
-    )
+    return render_template_string(INDEX_HTML, 
+        path=req_path or "/", 
+        links="".join(file_links),
+        same_tab_status=same_tab_status,
+        preview_button=preview_button,
+        preview_value=preview_value)
 
 @app.route("/toggle_same_tab", methods=["POST"])
 def toggle_same_tab():
@@ -545,44 +883,7 @@ def viewer():
     
     try:
         links = json.loads(links_json)
-        title_tag = f"<title>{title}</title>" if title else ""
-        html = f'''
-        <!DOCTYPE html>
-        <html>
-        <head>
-            {title_tag}
-            <style>
-                body {{
-                    margin: 0;
-                    padding: 20px 0;
-                    background-color: #f0f0f0;
-                }}
-                .image-container {{
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                    gap: 20px;
-                }}
-                .image-container img {{
-                    max-width: 100%;
-                    height: auto;
-                    display: block;
-                    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="image-container">
-        '''
-        for link in links:
-            html += f'<img src="{link}">'
-        
-        html += '''
-            </div>
-        </body>
-        </html>
-        '''
-        return html
+        return render_template_string(VIEWER_HTML, title=title, links=links)
     except:
         return "Error loading links", 400
 
@@ -594,62 +895,20 @@ def view_queue(queue_id):
     queue = download_queues[queue_id]
     
     if queue['status'] == 'completed':
-        html = render_template_string('''
-        <h1>Proceso Completado</h1>
-        <p>Total: {{ total }} codigos</p>
-        <p>Exitosos: {{ successful }} | Fallidos: {{ failed }}</p>
-        <h2>Resultados:</h2>
-        <ul>
-        {% for r in results %}
-            <li>
-                <b>{{ r.code }}</b> - {{ r.title if r.success else 'FALLIDO' }}
-                {% if r.success and r.cover %}
-                    <br><img src="{{ r.cover }}" style="max-width:100px;">
-                {% endif %}
-                {% if not r.success %}
-                    <br>Error: {{ r.error }}
-                {% endif %}
-                {% if r.data %}
-                    <br>
-                    <a href="/viewer?links={{ r.links | tojson | urlencode }}&title={{ r.title }}"><button>Ver</button></a>
-                    <a href="/process_nhentai?codes={{ r.code }}&action=view"><button>Ver Directo NH</button></a>
-                    <a href="/process_3hentai?codes={{ r.code }}&action=view"><button>Ver Directo 3H</button></a>
-                    <form method="post" action="/save_json" style="display:inline;">
-                        <input type="hidden" name="data" value='{{ r.data | tojson }}'>
-                        <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
-                        <button type="submit">JSON</button>
-                    </form>
-                    <form method="post" action="/save_txt" style="display:inline;">
-                        <input type="hidden" name="links" value='{{ r.links | tojson }}'>
-                        <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
-                        <button type="submit">TXT</button>
-                    </form>
-                    <form method="post" action="/create_pdf_from_data" style="display:inline;">
-                        <input type="hidden" name="links" value='{{ r.links | tojson }}'>
-                        <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
-                        <button type="submit">PDF</button>
-                    </form>
-                    <form method="post" action="/create_cbz_from_data" style="display:inline;">
-                        <input type="hidden" name="links" value='{{ r.links | tojson }}'>
-                        <input type="hidden" name="filename" value="{{ r.title }} - {{ r.code }}">
-                        <button type="submit">CBZ</button>
-                    </form>
-                {% endif %}
-            </li>
-        {% endfor %}
-        </ul>
-        <p><a href="/">Volver al inicio</a></p>
-        ''', total=queue['total'], successful=queue['successful'], failed=queue['failed'], results=queue['results'])
+        html = render_template_string(QUEUE_COMPLETED_HTML, 
+            total=queue['total'], 
+            successful=queue['successful'], 
+            failed=queue['failed'], 
+            results=queue['results'])
         
         del download_queues[queue_id]
         return html
     
-    return render_template_string('''
-    <h1>Procesando...</h1>
-    <p>Progreso: {{ current }}/{{ total }}</p>
-    <p>Codigo actual: {{ current_code }}</p>
-    <p><a href="/queue/{{ queue_id }}">Actualizar</a></p>
-    ''', current=queue['current'], total=queue['total'], current_code=queue['current_code'], queue_id=queue_id)
+    return render_template_string(QUEUE_PROCESSING_HTML, 
+        current=queue['current'], 
+        total=queue['total'], 
+        current_code=queue['current_code'], 
+        queue_id=queue_id)
 
 @app.route("/process_nhentai", methods=["GET", "POST"])
 def process_nhentai():
@@ -674,42 +933,20 @@ def process_nhentai():
         result = neko_instance.vnh(codes[0])
         if isinstance(result, dict) and "code" in result:
             base_name = f"{result.get('title', 'unknown')} - {result.get('code', 'unknown')}"
-            safe_name = neko_instance.clean_name(base_name)
-            
             links_json = json.dumps(result.get("image_links", []))
             data_json = json.dumps(result)
             title = result.get('title', 'unknown')
+            cover = result.get('cover_image') or result['image_links'][0]
             
-            buttons = f'''
-            <h1>Resultado de {codes[0]} (nhentai)</h1>
-            <img src="{result.get('cover_image') or result['image_links'][0]}" style="max-width:200px;">
-            <pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>
-            <a href="/viewer?links={urllib.parse.quote(links_json)}&title={urllib.parse.quote(title)}"><button>Ver</button></a>
-            <a href="/process_nhentai?codes={codes[0]}&action=view"><button>Ver Directo NH</button></a>
-            <a href="/process_3hentai?codes={codes[0]}&action=view"><button>Ver Directo 3H</button></a>
-            <form method="post" action="/save_json" style="display:inline;">
-                <input type="hidden" name="data" value='{data_json}'>
-                <input type="hidden" name="filename" value="{base_name}">
-                <button type="submit">JSON</button>
-            </form>
-            <form method="post" action="/save_txt" style="display:inline;">
-                <input type="hidden" name="links" value='{links_json}'>
-                <input type="hidden" name="filename" value="{base_name}">
-                <button type="submit">TXT</button>
-            </form>
-            <form method="post" action="/create_pdf_from_data" style="display:inline;">
-                <input type="hidden" name="links" value='{links_json}'>
-                <input type="hidden" name="filename" value="{base_name}">
-                <button type="submit">PDF</button>
-            </form>
-            <form method="post" action="/create_cbz_from_data" style="display:inline;">
-                <input type="hidden" name="links" value='{links_json}'>
-                <input type="hidden" name="filename" value="{base_name}">
-                <button type="submit">CBZ</button>
-            </form>
-            <p><a href="/nekotools">Volver</a></p>
-            '''
-            return buttons
+            return render_template_string(NH_RESULT_HTML,
+                code=codes[0],
+                cover=cover,
+                data=json.dumps(result, indent=2, ensure_ascii=False),
+                links=urllib.parse.quote(links_json),
+                title=urllib.parse.quote(title),
+                data_json=data_json,
+                base_name=base_name,
+                links_json=links_json)
     
     queue_id = str(uuid.uuid4())
     download_queues[queue_id] = {
@@ -751,42 +988,20 @@ def process_3hentai():
         result = neko_instance.v3h(codes[0])
         if isinstance(result, dict) and "code" in result:
             base_name = f"{result.get('title', 'unknown')} - {result.get('code', 'unknown')}"
-            safe_name = neko_instance.clean_name(base_name)
-            
             links_json = json.dumps(result.get("image_links", []))
             data_json = json.dumps(result)
             title = result.get('title', 'unknown')
+            cover = result.get('cover_image') or result['image_links'][0]
             
-            buttons = f'''
-            <h1>Resultado de {codes[0]} (3hentai)</h1>
-            <img src="{result.get('cover_image') or result['image_links'][0]}" style="max-width:200px;">
-            <pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>
-            <a href="/viewer?links={urllib.parse.quote(links_json)}&title={urllib.parse.quote(title)}"><button>Ver</button></a>
-            <a href="/process_nhentai?codes={codes[0]}&action=view"><button>Ver Directo NH</button></a>
-            <a href="/process_3hentai?codes={codes[0]}&action=view"><button>Ver Directo 3H</button></a>
-            <form method="post" action="/save_json" style="display:inline;">
-                <input type="hidden" name="data" value='{data_json}'>
-                <input type="hidden" name="filename" value="{base_name}">
-                <button type="submit">JSON</button>
-            </form>
-            <form method="post" action="/save_txt" style="display:inline;">
-                <input type="hidden" name="links" value='{links_json}'>
-                <input type="hidden" name="filename" value="{base_name}">
-                <button type="submit">TXT</button>
-            </form>
-            <form method="post" action="/create_pdf_from_data" style="display:inline;">
-                <input type="hidden" name="links" value='{links_json}'>
-                <input type="hidden" name="filename" value="{base_name}">
-                <button type="submit">PDF</button>
-            </form>
-            <form method="post" action="/create_cbz_from_data" style="display:inline;">
-                <input type="hidden" name="links" value='{links_json}'>
-                <input type="hidden" name="filename" value="{base_name}">
-                <button type="submit">CBZ</button>
-            </form>
-            <p><a href="/nekotools">Volver</a></p>
-            '''
-            return buttons
+            return render_template_string(TH_RESULT_HTML,
+                code=codes[0],
+                cover=cover,
+                data=json.dumps(result, indent=2, ensure_ascii=False),
+                links=urllib.parse.quote(links_json),
+                title=urllib.parse.quote(title),
+                data_json=data_json,
+                base_name=base_name,
+                links_json=links_json)
     
     queue_id = str(uuid.uuid4())
     download_queues[queue_id] = {
@@ -913,286 +1128,37 @@ def search_results():
         total_paginas = results_data.get("total_paginas", 1)
         pagina_actual = results_data.get("pagina_actual", 1)
         
-        if not resultados:
-            return f'''
-            <html>
-            <head><title>Sin resultados</title></head>
-            <body>
-                <h1>No se encontraron resultados para "{search_term}"</h1>
-                <p><a href="/nekotools">Volver a NekoTools</a></p>
-            </body>
-            </html>
-            '''
-        
-        process_route = "/process_nhentai" if site == "nhentai" else "/process_3hentai"
-        
-        html = f'''
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Resultados de búsqueda: {search_term}</title>
-            <style>
-                body {{
-                    font-family: Arial, sans-serif;
-                    margin: 20px;
-                    background-color: #f5f5f5;
-                }}
-                h1 {{
-                    color: #333;
-                }}
-                .search-info {{
-                    background-color: #fff;
-                    padding: 15px;
-                    border-radius: 5px;
-                    margin-bottom: 20px;
-                    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-                }}
-                .results-grid {{
-                    display: grid;
-                    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-                    gap: 20px;
-                    margin-top: 20px;
-                }}
-                .result-card {{
-                    background-color: #fff;
-                    border-radius: 8px;
-                    overflow: hidden;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                    transition: transform 0.3s ease;
-                }}
-                .result-card:hover {{
-                    transform: translateY(-5px);
-                    box-shadow: 0 5px 20px rgba(0,0,0,0.2);
-                }}
-                .result-image-container {{
-                    position: relative;
-                    width: 100%;
-                    height: 300px;
-                }}
-                .result-image {{
-                    width: 100%;
-                    height: 300px;
-                    object-fit: cover;
-                    border-bottom: 1px solid #eee;
-                }}
-                .convert-overlay {{
-                    position: absolute;
-                    top: 0;
-                    left: 0;
-                    width: 100%;
-                    height: 100%;
-                    background-color: rgba(0,0,0,0.5);
-                    display: flex;
-                    justify-content: center;
-                    align-items: center;
-                    opacity: 0;
-                    transition: opacity 0.3s ease;
-                }}
-                .result-image-container:hover .convert-overlay {{
-                    opacity: 1;
-                }}
-                .convert-btn {{
-                    background-color: #ffc107;
-                    color: #333;
-                    border: none;
-                    padding: 10px 15px;
-                    border-radius: 4px;
-                    cursor: pointer;
-                    font-size: 14px;
-                    text-decoration: none;
-                }}
-                .result-info {{
-                    padding: 15px;
-                }}
-                .result-code {{
-                    background-color: #007bff;
-                    color: white;
-                    display: inline-block;
-                    padding: 3px 8px;
-                    border-radius: 4px;
-                    font-size: 12px;
-                    margin-bottom: 8px;
-                }}
-                .result-title {{
-                    font-size: 14px;
-                    line-height: 1.4;
-                    margin-bottom: 10px;
-                    max-height: 60px;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                    display: -webkit-box;
-                    -webkit-line-clamp: 3;
-                    -webkit-box-orient: vertical;
-                }}
-                .result-actions {{
-                    display: flex;
-                    gap: 5px;
-                    margin-top: 10px;
-                    flex-wrap: wrap;
-                }}
-                .btn {{
-                    flex: 1;
-                    padding: 8px;
-                    border: none;
-                    border-radius: 4px;
-                    cursor: pointer;
-                    font-size: 12px;
-                    text-align: center;
-                    text-decoration: none;
-                    display: inline-block;
-                    min-width: 60px;
-                }}
-                .btn-view {{
-                    background-color: #28a745;
-                    color: white;
-                }}
-                .btn-cbz {{
-                    background-color: #ffc107;
-                    color: #333;
-                }}
-                .btn-pdf {{
-                    background-color: #dc3545;
-                    color: white;
-                }}
-                .btn-direct {{
-                    background-color: #17a2b8;
-                    color: white;
-                }}
-                .pagination {{
-                    display: flex;
-                    justify-content: center;
-                    gap: 10px;
-                    margin-top: 30px;
-                    margin-bottom: 30px;
-                    flex-wrap: wrap;
-                }}
-                .page-link {{
-                    padding: 8px 15px;
-                    background-color: #fff;
-                    border: 1px solid #ddd;
-                    border-radius: 4px;
-                    text-decoration: none;
-                    color: #007bff;
-                    cursor: pointer;
-                }}
-                .page-link.active {{
-                    background-color: #007bff;
-                    color: white;
-                    border-color: #007bff;
-                }}
-                .page-link:hover {{
-                    background-color: #f0f0f0;
-                }}
-                .back-link {{
-                    display: inline-block;
-                    margin-bottom: 20px;
-                    color: #007bff;
-                    text-decoration: none;
-                }}
-                .back-link:hover {{
-                    text-decoration: underline;
-                }}
-                .site-badge {{
-                    background-color: #6c757d;
-                    color: white;
-                    padding: 2px 6px;
-                    border-radius: 4px;
-                    font-size: 10px;
-                    margin-left: 5px;
-                }}
-            </style>
-            <script>
-                function navigateToPage(page) {{
-                    fetch(`/search?term={urllib.parse.quote(search_term)}&page=${{page}}&site={site}`, {{
-                        method: 'GET',
-                        headers: {{
-                            'X-Requested-With': 'XMLHttpRequest'
-                        }}
-                    }})
-                    .then(response => response.text())
-                    .then(html => {{
-                        document.open();
-                        document.write(html);
-                        document.close();
-                    }});
-                }}
-            </script>
-        </head>
-        <body>
-            <a href="/nekotools" class="back-link">← Volver a NekoTools</a>
-            <h1>Resultados de búsqueda en {site}</h1>
-            
-            <div class="search-info">
-                <p><strong>Término:</strong> {search_term}</p>
-                <p><strong>Total de resultados:</strong> {total_resultados}</p>
-                <p><strong>Página:</strong> {pagina_actual} de {total_paginas}</p>
-                <p><strong>Nota:</strong> Si las imágenes no se ven, pasa el mouse sobre cada imagen y haz clic en "Convertir Cover".</p>
-            </div>
-            
-            <div class="results-grid">
-        '''
-        
         for r in resultados:
             codigo = r.get("codigo", r.get("code", ""))
             nombre = r.get("nombre", r.get("title", r.get("name", "Sin título")))
             miniatura = r.get("miniatura", r.get("cover", r.get("thumbnail", "")))
-            
             if miniatura.startswith('//'):
                 miniatura = 'https:' + miniatura
-            
-            html += f'''
-                <div class="result-card">
-                    <div class="result-image-container">
-                        <img src="{miniatura}" class="result-image" alt="{nombre}" onerror="this.src='https://via.placeholder.com/300x400?text=Sin+imagen'">
-                        <div class="convert-overlay">
-                            <form method="post" action="/convert_cover" style="display:inline;" onsubmit="event.preventDefault(); fetch(this.action, {{method:'POST', body:new FormData(this)}}).then(r=>r.text()).then(t=>{{alert('Cover convertido'); location.reload();}});">
-                                <input type="hidden" name="image_url" value="{miniatura}">
-                                <input type="hidden" name="code" value="{codigo}">
-                                <input type="hidden" name="site" value="{site}">
-                                <button type="submit" class="convert-btn">Convertir Cover</button>
-                            </form>
-                        </div>
-                    </div>
-                    <div class="result-info">
-                        <span class="result-code">{codigo}</span>
-                        <span class="site-badge">{site}</span>
-                        <div class="result-title">{nombre}</div>
-                        <div class="result-actions">
-                            <a href="{process_route}?codes={codigo}&action=view"{target_attr} class="btn btn-view">Ver</a>
-                            <a href="{process_route}?codes={codigo}&action=cbz"{target_attr} class="btn btn-cbz">CBZ</a>
-                            <a href="{process_route}?codes={codigo}&action=pdf"{target_attr} class="btn btn-pdf">PDF</a>
-                            <a href="{process_route}?codes={codigo}&action=view"{target_attr} class="btn btn-direct">Directo</a>
-                        </div>
-                    </div>
-                </div>
-            '''
+            r['codigo'] = codigo
+            r['nombre'] = nombre
+            r['miniatura'] = miniatura
         
-        html += '''
-            </div>
-            
-            <div class="pagination">
-        '''
+        process_route = "/process_nhentai" if site == "nhentai" else "/process_3hentai"
         
         pagina_actual_int = int(pagina_actual)
         total_paginas_int = int(total_paginas)
         
-        for p in range(1, min(total_paginas_int + 1, 11)):
-            if p == pagina_actual_int:
-                html += f'<span class="page-link active">{p}</span>'
-            else:
-                html += f'<a href="#" class="page-link" onclick="navigateToPage({p}); return false;">{p}</a>'
+        pagination_range = list(range(1, min(total_paginas_int + 1, 11)))
+        show_ellipsis = total_paginas_int > 10
         
-        if total_paginas_int > 10:
-            html += '<span class="page-link">...</span>'
-            html += f'<a href="#" class="page-link" onclick="navigateToPage({total_paginas_int}); return false;">{total_paginas_int}</a>'
-        
-        html += '''
-            </div>
-        </body>
-        </html>
-        '''
-        
-        return html
+        return render_template_string(SEARCH_RESULTS_HTML,
+            search_term=search_term,
+            site=site,
+            total_resultados=total_resultados,
+            pagina_actual=pagina_actual,
+            total_paginas=total_paginas,
+            resultados=resultados,
+            process_route=process_route,
+            target_attr=target_attr,
+            pagina_actual_int=pagina_actual_int,
+            total_paginas_int=total_paginas_int,
+            pagination_range=pagination_range,
+            show_ellipsis=show_ellipsis)
     except Exception as e:
         return f"Error al mostrar resultados: {str(e)}", 500
 
@@ -1258,13 +1224,13 @@ def nekotools():
                 thread.daemon = True
                 thread.start()
                 
-                return f'''
+                return f"""
                 <h2>Descarga iniciada</h2>
                 <p>ID: {download_id}</p>
                 <p>Nombre: {torrent_name}</p>
                 <p>Monitorear progreso: <a href="/tdl?id={download_id}">/tdl?id={download_id}</a></p>
                 <p><a href="/nekotools">Volver</a></p>
-                '''
+                """
         
         elif action == "download_from_json":
             json_file = request.files.get("json_file")
@@ -1319,7 +1285,7 @@ def nekotools():
                 if result:
                     safe_name = neko_instance.clean_name(name)
                     safe_filename = os.path.basename(result)
-                    return f"CBZ creado: <a href='/{urllib.parse.quote(safe_filename)}'>{safe_name}.cbz</a><br><a href='/nekotools'>Volver</a>'
+                    return f"CBZ creado: <a href='/{urllib.parse.quote(safe_filename)}'>{safe_name}.cbz</a><br><a href='/nekotools'>Volver</a>"
                 else:
                     return "Error al crear CBZ<br><a href='/nekotools'>Volver</a>"
         
@@ -1332,7 +1298,7 @@ def nekotools():
                 if result:
                     safe_name = neko_instance.clean_name(name)
                     safe_filename = os.path.basename(result)
-                    return f"PDF creado: <a href='/{urllib.parse.quote(safe_filename)}'>{safe_name}.pdf</a><br><a href='/nekotools'>Volver</a>'
+                    return f"PDF creado: <a href='/{urllib.parse.quote(safe_filename)}'>{safe_name}.pdf</a><br><a href='/nekotools'>Volver</a>'"
                 else:
                     return "Error al crear PDF<br><a href='/nekotools'>Volver</a>"
         
@@ -1349,114 +1315,7 @@ def nekotools():
                 site = "nhentai" if action == "snh" else "3hentai"
                 return redirect(url_for("search", term=search_term, page=page, site=site))
     
-    html = '''
-    <h1>NekoTools</h1>
-    
-    <h2>Descargar Torrent / Magnet</h2>
-    <form method="post">
-        Nombre: <input type="text" name="torrent_name" placeholder="Nombre del torrent" required>
-        <br>
-        Magnet Link: <input type="text" name="torrent_magnet" placeholder="magnet:?xt=urn:btih:..." size="60" required>
-        <input type="hidden" name="action" value="torrent">
-        <br>
-        <button type="submit">Iniciar Descarga</button>
-    </form>
-    <p>Monitorear progreso: <a href="/tdl">/tdl</a> (actualizar automáticamente)</p>
-    
-    <hr>
-    
-    <h2>nhentai</h2>
-    <form method="post" action="/process_nhentai">
-        Codigos: <textarea name="codes" rows="3" cols="50" placeholder="318156 o 318156 318157 318158"></textarea>
-        <br>
-        <button type="submit" name="action" value="view">Ver</button>
-        <button type="submit" name="action" value="cbz">Crear CBZ</button>
-        <button type="submit" name="action" value="pdf">Crear PDF</button>
-    </form>
-    
-    <h2>3hentai</h2>
-    <form method="post" action="/process_3hentai">
-        Codigos: <textarea name="codes" rows="3" cols="50" placeholder="318156 o 318156 318157 318158"></textarea>
-        <br>
-        <button type="submit" name="action" value="view">Ver</button>
-        <button type="submit" name="action" value="cbz">Crear CBZ</button>
-        <button type="submit" name="action" value="pdf">Crear PDF</button>
-    </form>
-    
-    <h2>Descargar desde JSON</h2>
-    <form method="post" enctype="multipart/form-data">
-        <input type="file" name="json_file" accept=".json">
-        <input type="hidden" name="action" value="download_from_json">
-        <button type="submit">Descargar imagenes desde JSON</button>
-    </form>
-    
-    <h2>Descargar desde TXT</h2>
-    <form method="post" enctype="multipart/form-data">
-        <input type="file" name="txt_file" accept=".txt">
-        <br>
-        Nombre de carpeta: <input type="text" name="txt_folder" placeholder="Nombre para la carpeta">
-        <input type="hidden" name="action" value="download_from_txt">
-        <button type="submit">Descargar imagenes desde TXT</button>
-    </form>
-    
-    <h2>Descargar Archivo</h2>
-    <form method="post">
-        URL: <input type="text" name="download_url" placeholder="URL del archivo">
-        <br>
-        Nombre: <input type="text" name="download_name" placeholder="Nombre del archivo">
-        <input type="hidden" name="action" value="download">
-        <button type="submit">Descargar</button>
-    </form>
-    
-    <h2>Convertir a PNG</h2>
-    <form method="post" enctype="multipart/form-data">
-        <input type="file" name="file" multiple>
-        <input type="hidden" name="action" value="convert_png">
-        <button type="submit">Convertir</button>
-    </form>
-    
-    <h2>Crear CBZ</h2>
-    <form method="post">
-        Nombre: <input type="text" name="cbz_name" placeholder="Nombre del archivo">
-        <br>
-        Lista (URLs o paths, uno por linea):<br>
-        <textarea name="cbz_list" rows="5" cols="50"></textarea>
-        <input type="hidden" name="action" value="create_cbz">
-        <button type="submit">Crear CBZ</button>
-    </form>
-    
-    <h2>Crear PDF</h2>
-    <form method="post">
-        Nombre: <input type="text" name="pdf_name" placeholder="Nombre del archivo">
-        <br>
-        Lista (URLs o paths, uno por linea):<br>
-        <textarea name="pdf_list" rows="5" cols="50"></textarea>
-        <input type="hidden" name="action" value="create_pdf">
-        <button type="submit">Crear PDF</button>
-    </form>
-    
-    <h2>Buscar en nhentai</h2>
-    <form method="post">
-        Termino: <input type="text" name="snh_search" placeholder="Termino de busqueda">
-        <br>
-        Pagina: <input type="number" name="snh_page" value="1" min="1">
-        <input type="hidden" name="action" value="snh">
-        <button type="submit">Buscar SNH</button>
-    </form>
-    
-    <h2>Buscar en 3hentai</h2>
-    <form method="post">
-        Termino: <input type="text" name="s3h_search" placeholder="Termino de busqueda">
-        <br>
-        Pagina: <input type="number" name="s3h_page" value="1" min="1">
-        <input type="hidden" name="action" value="s3h">
-        <button type="submit">Buscar S3H</button>
-    </form>
-    
-    <h2>Resultado:</h2>
-    <pre>{{result_text}}</pre>
-    '''
-    return render_template_string(html, result_text=result_text)
+    return render_template_string(NEKOTOOLS_HTML, result_text=result_text)
 
 def run_flask():
     app.run(host="0.0.0.0", port=5000)
