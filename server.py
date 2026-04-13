@@ -10,7 +10,7 @@ import tempfile
 import shutil
 import zipfile
 import requests
-from flask import Flask, request, redirect, url_for, send_file, session
+from flask import Flask, request, redirect, url_for, send_file, session, render_template_string
 from werkzeug.utils import secure_filename
 from neko import Neko
 from PIL import Image
