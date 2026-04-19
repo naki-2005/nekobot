@@ -1,20 +1,16 @@
-
 import os
-import asyncio
+import aiohttp
 import tempfile
 import shutil
-import zipfile
-import aiohttp
-import bencodepy
 import hashlib
-from pyrogram.types import Message
+import bencodepy
 from botcmd.utils import safe_call
 
 class TorrentDownloadCommands:
     def __init__(self, bot):
         self.bot = bot
         self.neko = bot.neko
-    
+
     async def leech(self, message):
         user_id = message.from_user.id
         compress_7z = "-7" in message.text
@@ -28,7 +24,7 @@ class TorrentDownloadCommands:
                 await self._process_torrent_text(message, reply.text, compress_7z, compress_zip)
                 return
             else:
-                await self.bot.safe_call(message.reply_text, "❌ Responde a un mensaje con texto o archivo .torrent (<5MB)")
+                await safe_call(message.reply_text, "❌ Responde a un mensaje con texto o archivo .torrent (<5MB)")
                 return
         parts = message.text.split()
         torrent_input = None
@@ -39,11 +35,11 @@ class TorrentDownloadCommands:
         if torrent_input:
             await self._process_torrent_text(message, torrent_input, compress_7z, compress_zip)
         else:
-            await self.bot.safe_call(message.reply_text, "❌ Usa: `/leech magnet:...` o `/leech http://...torrent` o responde a un archivo\nUsa `/leech -7` para comprimir en 7z\nUsa `/leech -z` para comprimir en zip")
-    
+            await safe_call(message.reply_text, "❌ Usa: `/leech magnet:...` o `/leech http://...torrent` o responde a un archivo\nUsa `/leech -7` para comprimir en 7z\nUsa `/leech -z` para comprimir en zip")
+
     async def _process_torrent_file(self, message, document, compress_7z=False, compress_zip=False):
         if not document.file_name.endswith('.torrent'):
-            await self.bot.safe_call(message.reply_text, "❌ El archivo debe ser .torrent")
+            await safe_call(message.reply_text, "❌ El archivo debe ser .torrent")
             return
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".torrent")
         temp_path = temp_file.name
@@ -53,13 +49,13 @@ class TorrentDownloadCommands:
             torrent_data = f.read()
         magnet = self._torrent_to_magnet(torrent_data)
         os.remove(temp_path)
-        await self.start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_7z, compress_zip)
-    
+        await self.bot.tdl_cmd.start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_7z, compress_zip)
+
     async def _process_torrent_text(self, message, text, compress_7z=False, compress_zip=False):
         text = text.strip()
         if text.startswith("magnet:?"):
             magnet = text
-            await self.start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_7z, compress_zip)
+            await self.bot.tdl_cmd.start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_7z, compress_zip)
             return
         elif text.endswith(".torrent"):
             if text.startswith("http://") or text.startswith("https://"):
@@ -69,22 +65,22 @@ class TorrentDownloadCommands:
                             if response.status == 200:
                                 torrent_data = await response.read()
                                 magnet = self._torrent_to_magnet(torrent_data)
-                                await self.start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_7z, compress_zip)
+                                await self.bot.tdl_cmd.start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_7z, compress_zip)
                             else:
-                                await self.bot.safe_call(message.reply_text, f"❌ Error al descargar")
+                                await safe_call(message.reply_text, f"❌ Error al descargar")
                 except Exception as e:
-                    await self.bot.safe_call(message.reply_text, f"❌ Error")
+                    await safe_call(message.reply_text, f"❌ Error")
             else:
                 if os.path.exists(text):
                     with open(text, "rb") as f:
                         torrent_data = f.read()
                     magnet = self._torrent_to_magnet(torrent_data)
-                    await self.start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_7z, compress_zip)
+                    await self.bot.tdl_cmd.start_torrent_download(message, {"magnet": magnet}, message.from_user.id, compress_7z, compress_zip)
                 else:
-                    await self.bot.safe_call(message.reply_text, "❌ Archivo no encontrado")
+                    await safe_call(message.reply_text, "❌ Archivo no encontrado")
         else:
-            await self.bot.safe_call(message.reply_text, "❌ Enlace no válido")
-    
+            await safe_call(message.reply_text, "❌ Enlace no válido")
+
     async def start_torrent_download(self, message, result, user_id, compress_7z=False, compress_zip=False):
         global premium_enabled, premium_limit, normal_limit
         magnet = result.get("magnet", "")
@@ -92,7 +88,7 @@ class TorrentDownloadCommands:
             return
         download_path = os.path.join(os.getcwd(), "vault", str(user_id), "torrents")
         os.makedirs(download_path, exist_ok=True)
-        status_msg = await self.bot.safe_call(message.reply_text, "⏳ Iniciando descarga torrent..." + (" (comprimirá en 7z antes de enviar)" if compress_7z else " (comprimirá en zip antes de enviar)" if compress_zip else ""))
+        status_msg = await safe_call(message.reply_text, "⏳ Iniciando descarga torrent..." + (" (comprimirá en 7z antes de enviar)" if compress_7z else " (comprimirá en zip antes de enviar)" if compress_zip else ""))
         try:
             download_generator = self.neko.download_magnet(magnet, download_path)
             final_path = None
@@ -102,7 +98,7 @@ class TorrentDownloadCommands:
                 if progress_text.startswith("📥"):
                     current_time = time.time()
                     if progress_text != last_progress and current_time - last_update_time >= 10:
-                        await self.bot.safe_call(status_msg.edit_text, progress_text + (" (comprimirá al finalizar)" if compress_7z or compress_zip else ""))
+                        await safe_call(status_msg.edit_text, progress_text + (" (comprimirá al finalizar)" if compress_7z or compress_zip else ""))
                         last_progress = progress_text
                         last_update_time = current_time
                 elif progress_text.startswith("✅") and "COMPLETADO" in progress_text:
@@ -116,7 +112,7 @@ class TorrentDownloadCommands:
                 except:
                     pass
                 if compress_7z:
-                    await self.bot.safe_call(message.reply_text, "🗜️ Comprimiendo en 7z...")
+                    await safe_call(message.reply_text, "🗜️ Comprimiendo en 7z...")
                     if premium_enabled:
                         target_size = premium_limit
                     else:
@@ -131,10 +127,10 @@ class TorrentDownloadCommands:
                                 user_id=user_id
                             )
                     else:
-                        await self.bot.safe_call(message.reply_text, "❌ Error al comprimir en 7z, enviando archivos sin comprimir...")
-                        await self._send_files_normally(message, final_path, user_id)
+                        await safe_call(message.reply_text, "❌ Error al comprimir en 7z, enviando archivos sin comprimir...")
+                        await self.bot._send_files_normally(message, final_path, user_id)
                 elif compress_zip:
-                    await self.bot.safe_call(message.reply_text, "🗜️ Comprimiendo en zip...")
+                    await safe_call(message.reply_text, "🗜️ Comprimiendo en zip...")
                     zip_path = await self._create_zip_from_path(final_path)
                     if zip_path and os.path.exists(zip_path):
                         await self.bot._send_document_with_progress(
@@ -148,11 +144,10 @@ class TorrentDownloadCommands:
                         except:
                             pass
                     else:
-                        await self.bot.safe_call(message.reply_text, "❌ Error al comprimir en zip, enviando archivos sin comprimir...")
-                        await self._send_files_normally(message, final_path, user_id)
+                        await safe_call(message.reply_text, "❌ Error al comprimir en zip, enviando archivos sin comprimir...")
+                        await self.bot._send_files_normally(message, final_path, user_id)
                 else:
-                    await self._send_files_normally(message, final_path, user_id)
-                
+                    await self.bot._send_files_normally(message, final_path, user_id)
                 download_base = os.path.dirname(download_path)
                 if os.path.exists(download_base):
                     shutil.rmtree(download_base, ignore_errors=True)
@@ -161,15 +156,16 @@ class TorrentDownloadCommands:
                     await status_msg.delete()
                 except:
                     pass
-                await self.bot.safe_call(message.reply_text, "✅ Descarga completada pero no se encontraron archivos para enviar")
+                await safe_call(message.reply_text, "✅ Descarga completada pero no se encontraron archivos para enviar")
         except Exception as e:
             try:
                 await status_msg.delete()
             except:
                 pass
-            await self.bot.safe_call(message.reply_text, f"❌ Error en la descarga torrent: {str(e)}")
-    
+            await safe_call(message.reply_text, f"❌ Error en la descarga torrent: {str(e)}")
+
     async def _create_zip_from_path(self, path):
+        import zipfile
         try:
             if os.path.isfile(path):
                 zip_name = os.path.splitext(os.path.basename(path))[0] + ".zip"
@@ -193,30 +189,7 @@ class TorrentDownloadCommands:
         except Exception as e:
             print(f"Error creando zip: {e}")
             return None
-    
-    async def _send_files_normally(self, message, final_path, user_id):
-        if os.path.isfile(final_path):
-            await self.bot._send_document_with_progress(
-                message.chat.id,
-                final_path,
-                caption=f"✅ {os.path.basename(final_path)}",
-                user_id=user_id
-            )
-        elif os.path.isdir(final_path):
-            for root, dirs, files in os.walk(final_path):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    try:
-                        await self.bot._send_document_with_progress(
-                            message.chat.id,
-                            file_path,
-                            caption=f"✅ {os.path.basename(file_path)}",
-                            user_id=user_id
-                        )
-                        await asyncio.sleep(0.5)
-                    except Exception as e:
-                        print(f"Error enviando archivo {file_path}: {e}")
-    
+
     def _torrent_to_magnet(self, torrent_data: bytes) -> str:
         try:
             torrent_dict = bencodepy.decode(torrent_data)
@@ -238,23 +211,23 @@ class TorrentDownloadCommands:
             return magnet
         except Exception as e:
             raise Exception(f"Error convirtiendo torrent a magnet: {e}")
-    
+
     async def mega(self, message):
         try:
             parts = message.text.split(maxsplit=1)
             if len(parts) < 2:
-                await self.bot.safe_call(message.reply_text, "Usa: `/mega mega_link`")
+                await safe_call(message.reply_text, "Usa: `/mega mega_link`")
                 return
             mega_link = parts[1].strip()
-            status_msg = await self.bot.safe_call(message.reply_text, "⏳ Iniciando descarga de MEGA...")
+            status_msg = await safe_call(message.reply_text, "⏳ Iniciando descarga de MEGA...")
             download_path = self.neko.mega_download(mega_link)
-            await self.bot.safe_call(status_msg.edit_text, "✅ Descarga de MEGA completada. Procesando archivos...")
+            await safe_call(status_msg.edit_text, "✅ Descarga de MEGA completada. Procesando archivos...")
             if not os.path.exists(download_path):
-                await self.bot.safe_call(status_msg.edit_text, "❌ No se encontró la carpeta de descarga")
+                await safe_call(status_msg.edit_text, "❌ No se encontró la carpeta de descarga")
                 return
             items = os.listdir(download_path)
             if len(items) == 0:
-                await self.bot.safe_call(status_msg.edit_text, "❌ La carpeta está vacía")
+                await safe_call(status_msg.edit_text, "❌ La carpeta está vacía")
                 shutil.rmtree(download_path, ignore_errors=True)
                 return
             elif len(items) == 1:
@@ -281,9 +254,9 @@ class TorrentDownloadCommands:
                                 user_id=message.from_user.id
                             )
                     else:
-                        await self.bot.safe_call(status_msg.edit_text, "❌ Error al comprimir carpeta")
+                        await safe_call(status_msg.edit_text, "❌ Error al comprimir carpeta")
                 else:
-                    await self.bot.safe_call(status_msg.edit_text, "❌ Tipo de archivo no soportado")
+                    await safe_call(status_msg.edit_text, "❌ Tipo de archivo no soportado")
             else:
                 if premium_enabled:
                     parts = self.neko.compress_to_7z(download_path, 3995)
@@ -298,7 +271,7 @@ class TorrentDownloadCommands:
                             user_id=message.from_user.id
                         )
                 else:
-                    await self.bot.safe_call(status_msg.edit_text, "❌ Error al comprimir archivos")
+                    await safe_call(status_msg.edit_text, "❌ Error al comprimir archivos")
             try:
                 await status_msg.delete()
             except:
@@ -310,4 +283,4 @@ class TorrentDownloadCommands:
                 await status_msg.delete()
             except:
                 pass
-            await self.bot.safe_call(message.reply_text, f"❌ Error en la descarga de MEGA: {str(e)}")
+            await safe_call(message.reply_text, f"❌ Error en la descarga de MEGA: {str(e)}")
