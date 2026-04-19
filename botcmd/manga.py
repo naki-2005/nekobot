@@ -7,6 +7,7 @@ import json
 from PIL import Image
 from pyrogram.types import Message
 from neko import Neko
+from botcmd.utils import safe_call
 
 class MangaCommands:
     def __init__(self, bot):
