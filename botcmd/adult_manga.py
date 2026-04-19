@@ -6,6 +6,7 @@ import base64
 import zipfile
 from PIL import Image
 from pyrogram.types import InputMediaPhoto
+from botcmd.utils import safe_call
 
 class AdultMangaCommands:
     def __init__(self, bot):
