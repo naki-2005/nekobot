@@ -440,9 +440,7 @@ class AdultMangaCommands:
             tag_lines = []
             for category, items in tags.items():
                 if items:
-                    items_str = ", ".join(items[:10])
-                    if len(items) > 10:
-                        items_str += f" (+{len(items)-10} más)"
+                    items_str = ", ".join(items)
                     tag_lines.append(f"**{category}:** {items_str}")
             return "\n".join(tag_lines)
         elif isinstance(tags, str):
