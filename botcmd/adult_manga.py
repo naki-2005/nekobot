@@ -1,156 +1,77 @@
 import os
-import asyncio
 import tempfile
 import base64
-from botcmd.utils import safe_call
+from PIL import Image
 
 class AdultMangaCommands:
     def __init__(self, bot):
         self.bot = bot
         self.neko = bot.neko
 
-    async def nh_or_3h(self, message, user_id, user_settings, user_nh_quality):
-        parts = message.text.split()
-        if len(parts) < 2:
-            await safe_call(message.reply_text, "Usa: `/nh codigo` o `/3h codigo`")
-            return
-        command = message.text.split()[0]
-        code = parts[1]
-        start_page = 1
-        end_page = None
-        single_page = None
-        text = message.text
-        if "-s" in text:
-            try:
-                s_idx = text.index("-s")
-                start_page = int(text[s_idx:].split()[1])
-            except:
-                await safe_call(message.reply_text, "Formato -s inválido")
-                return
-        if "-f" in text:
-            try:
-                f_idx = text.index("-f")
-                end_page = int(text[f_idx:].split()[1])
-            except:
-                await safe_call(message.reply_text, "Formato -f inválido")
-                return
-        if "-p" in text:
-            try:
-                p_idx = text.index("-p")
-                single_page = int(text[p_idx:].split()[1])
-            except:
-                await safe_call(message.reply_text, "Formato -p inválido")
-                return
-        format_choice = user_settings.get(user_id, "cbz")
-        quality_choice = user_nh_quality.get(user_id, "hd")
-        result = self.neko.vnh(code, quality_choice) if command == "/nh" else self.neko.v3h(code)
-        if single_page:
-            images = result.get("image_links", [])
-            if images and 0 < single_page <= len(images):
-                selected_url = images[single_page-1]
-                temp_path = await self.bot._prepare_image_for_telegram(selected_url)
-                if temp_path:
-                    await safe_call(message.reply_photo, temp_path, caption=f"Página {single_page}/{len(images)}")
-                    os.remove(temp_path)
-                else:
-                    await safe_call(message.reply_text, f"Error descargando página {single_page}")
-            else:
-                await safe_call(message.reply_text, f"Página {single_page} no encontrada")
-            return
-        if format_choice == "raw":
-            await self.bot._process_gallery_json_with_range(message, result, code, format_choice, start_page, end_page, user_id)
-        else:
-            await self.bot._process_gallery_with_format(message, result, code, format_choice, start_page, end_page, user_id)
+    async def get_doujin_info(self, code, quality="hd"):
+        return self.neko.vnh(code, quality)
 
-    async def snh_or_s3h(self, message):
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            await safe_call(message.reply_text, "Usa: `/snh busqueda` o `/s3h busqueda`")
-            return
-        search = parts[1]
-        result = self.neko.snh(search) if message.text.startswith("/snh ") else self.neko.s3h(search)
-        await self.bot._process_search_json(message, result, 0)
+    async def get_3h_info(self, code):
+        return self.neko.v3h(code)
 
-    async def hito(self, message, user_id, user_settings):
-        parts = message.text.split()
-        if len(parts) < 2:
-            await safe_call(message.reply_text, "Usa: `/hito ID` o `/hito ID -s inicio -f final`")
-            return
-        arg = parts[1]
-        g = None
-        start_page = 1
-        end_page = None
-        if arg.isdigit():
-            g = arg
-        elif "hitomi.la/reader/" in arg:
+    async def search_nhentai(self, search_term):
+        return self.neko.snh(search_term)
+
+    async def search_3hentai(self, search_term):
+        return self.neko.s3h(search_term)
+
+    async def get_hitomi_page(self, g, p):
+        return self.neko.hito(g, p)
+
+    async def get_hitomi_total_pages(self, g):
+        result = self.neko.hito(g, 1)
+        if "error" in result:
+            return 0, ""
+        return int(result.get("total_pages", 0)), result.get("title", "")
+
+    async def download_hitomi_pages_raw(self, g, pages, vault_dir):
+        downloaded_paths = []
+        for page_num in pages:
+            result = self.neko.hito(g, page_num)
+            if "error" in result:
+                continue
+            datos_imagen = result["img"]
+            imagen_decodificada = base64.b64decode(datos_imagen)
+            pagina_actual = int(result["actual_page"])
+            paginas_totales = int(result["total_pages"])
+            digitos = len(str(paginas_totales))
+            nombre_salida = f"{pagina_actual:0{digitos}d}.png"
+            vault_path = os.path.join(vault_dir, nombre_salida)
+            with open(vault_path, 'wb') as archivo_imagen:
+                archivo_imagen.write(imagen_decodificada)
+            downloaded_paths.append(vault_path)
+        return downloaded_paths
+
+    async def prepare_image(self, url):
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+        temp_path = temp_file.name
+        temp_file.close()
+        if await self.bot.async_download(url, temp_path):
             try:
-                g = arg.split("reader/")[1].split(".html")[0]
-            except:
-                await safe_call(message.reply_text, "Formato de enlace inválido")
-                return
-        else:
-            try:
-                g = arg.split("-")[-1].split(".html")[0]
-            except:
-                await safe_call(message.reply_text, "Formato de enlace inválido")
-                return
-        text = message.text
-        if "-s" in text:
-            try:
-                s_idx = text.index("-s")
-                start_page = int(text[s_idx:].split()[1])
-            except:
-                await safe_call(message.reply_text, "Formato -s inválido")
-                return
-        if "-f" in text:
-            try:
-                f_idx = text.index("-f")
-                end_page = int(text[f_idx:].split()[1])
-            except:
-                await safe_call(message.reply_text, "Formato -f inválido")
-                return
-        if "-p" in text:
-            try:
-                p_idx = text.index("-p")
-                single_page = int(text[p_idx:].split()[1])
-                result = self.neko.hito(g, single_page)
-                if "error" in result:
-                    await safe_call(message.reply_text, f"Error: {result['error']}")
-                    return
-                pagina_actual = int(result["actual_page"])
-                paginas_totales = int(result["total_pages"])
-                datos_imagen = result["img"]
-                titulo = result["title"]
-                digitos = len(str(paginas_totales))
-                nombre_salida = f"{pagina_actual:0{digitos}d}.png"
-                imagen_decodificada = base64.b64decode(datos_imagen)
-                with open(nombre_salida, 'wb') as archivo_imagen:
-                    archivo_imagen.write(imagen_decodificada)
-                await safe_call(message.reply_photo, nombre_salida, caption=f"Página {pagina_actual}/{paginas_totales} de {titulo}")
-                os.remove(nombre_salida)
-                return
-            except Exception as e:
-                await safe_call(message.reply_text, f"Error procesando página única: {e}")
-                return
-        format_choice = user_settings.get(user_id, "raw")
-        result_first = self.neko.hito(g, 1)
-        if "error" in result_first:
-            await safe_call(message.reply_text, f"Error: {result_first['error']}")
-            return
-        total_pages = int(result_first["total_pages"])
-        titulo = result_first["title"]
-        if end_page is None:
-            end_page = total_pages
-        start_page = max(1, start_page)
-        end_page = min(total_pages, end_page)
-        if start_page > end_page:
-            start_page, end_page = end_page, start_page
-        pages_to_download = list(range(start_page, end_page + 1))
-        if len(pages_to_download) == 0:
-            await safe_call(message.reply_text, "No hay páginas para descargar en el rango especificado")
-            return
-        progress_msg = await safe_call(message.reply_text, f"Preparando descarga de {g}...")
-        if format_choice == "raw":
-            await self.bot._download_hitomi_raw(message, g, pages_to_download, titulo, progress_msg, start_page, end_page, total_pages, user_id)
-        else:
-            await self.bot._download_hitomi_with_format(message, g, pages_to_download, titulo, progress_msg, start_page, end_page, total_pages, format_choice, user_id)
+                img = Image.open(temp_path)
+                if img.format == "WEBP":
+                    rgb_img = img.convert("RGB")
+                    rgb_img.save(temp_path, "JPEG")
+                return temp_path
+            except Exception:
+                return temp_path
+        return None
+
+    def format_tags(self, tags):
+        if not tags:
+            return ""
+        if isinstance(tags, dict):
+            tag_lines = []
+            for category, items in tags.items():
+                if items:
+                    items_str = ", ".join(items)
+                    tag_lines.append(f"**{category}:** {items_str}")
+            return "\n".join(tag_lines)
+        elif isinstance(tags, str):
+            return tags
+        return ""
