@@ -228,25 +228,36 @@ class NakiBotAPI:
                             tags_dict[tag_type] = []
                         tags_dict[tag_type].append(tag_name)
                 
-                media_id = data.get('media_id', '')
-                num_pages = data.get('num_pages', 0)
-                
                 image_links = []
-                if media_id and num_pages > 0:
-                    for page_num in range(1, num_pages + 1):
-                        if quality == "thumb":
-                            image_link = f"https://t2.nhentai.net/galleries/{media_id}/{page_num}t.webp"
-                        else:
-                            image_link = f"https://i2.nhentai.net/galleries/{media_id}/{page_num}.webp"
-                        image_links.append(image_link)
-                
                 cover_image = ""
-                if data.get('cover', {}).get('path'):
-                    if quality == "thumb":
-                        cover_path = data['cover']['path'].replace('cover.webp', 'thumb.webp')
-                        cover_image = f"https://t2.nhentai.net/{cover_path}"
-                    else:
-                        cover_image = f"https://i2.nhentai.net/{data['cover']['path']}"
+                
+                if 'pages' in data and data['pages']:
+                    for page in data['pages']:
+                        page_path = page.get('path', '')
+                        if page_path:
+                            if quality == "thumb":
+                                page_path = page_path.replace('.', 't.')
+                                image_link = f"https://t2.nhentai.net/{page_path}"
+                            else:
+                                image_link = f"https://i2.nhentai.net/{page_path}"
+                            image_links.append(image_link)
+                    
+                    if image_links:
+                        cover_image = image_links[0]
+                else:
+                    media_id = data.get('media_id', '')
+                    num_pages = data.get('num_pages', 0)
+                    
+                    if media_id and num_pages > 0:
+                        for page_num in range(1, num_pages + 1):
+                            if quality == "thumb":
+                                image_link = f"https://t2.nhentai.net/galleries/{media_id}/{page_num}t.jpg"
+                            else:
+                                image_link = f"https://i2.nhentai.net/galleries/{media_id}/{page_num}.jpg"
+                            image_links.append(image_link)
+                        
+                        if image_links:
+                            cover_image = image_links[0]
                 
                 return {
                     'title': title,
@@ -335,7 +346,7 @@ class NakiBotAPI:
                 if img_tag:
                     src_url = img_tag.get("data-src") or img_tag.get("src")
                     if src_url:
-                        full_img_url = re.sub(r't(?=\.\w{3,4}$)', '', src_url)
+                        full_img_url = re.sub(r't(?=\.\w{3,4})$', '', src_url)
                         image_links.append(full_img_url)
             
             cover_image = image_links[0] if image_links else ""
