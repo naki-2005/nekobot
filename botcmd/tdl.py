@@ -8,6 +8,7 @@ import aiohttp
 import bencodepy
 import hashlib
 from pyrogram.types import Message
+from botcmd.utils import safe_call
 
 class TorrentDownloadCommands:
     def __init__(self, bot):
