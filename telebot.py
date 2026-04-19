@@ -34,6 +34,7 @@ user_manga_settings = {}
 user_auto_settings = {}
 user_nextnames = {}
 user_premium_settings = {}
+user_nh_quality = {}
 premium_enabled = False
 premium_limit = 3995
 normal_limit = 1995
@@ -224,6 +225,17 @@ class NekoTelegram:
             await callback_query.answer()
             return
         
+        if data.startswith("nhq_"):
+            action = data[4:]
+            if action == "hd":
+                user_nh_quality[user_id] = "hd"
+                await callback_query.answer("✅ Calidad HD activada (alta calidad)", show_alert=True)
+            elif action == "sd":
+                user_nh_quality[user_id] = "thumb"
+                await callback_query.answer("✅ Calidad SD activada (miniaturas)", show_alert=True)
+            await self._show_nh_quality_menu(callback_query.message, user_id)
+            return
+        
         if data.startswith("nyaa_"):
             parts = data.split("_")
             if len(parts) < 3:
@@ -277,6 +289,26 @@ class NekoTelegram:
             self.current_positions[cache_key] = new_pos
             await self._update_nyaa_message(callback_query.message, results, new_pos, query_hash)
             await callback_query.answer()
+
+    async def _show_nh_quality_menu(self, message, user_id):
+        current_quality = user_nh_quality.get(user_id, "hd")
+        hd_status = "✅" if current_quality == "hd" else "❌"
+        sd_status = "✅" if current_quality == "thumb" else "❌"
+        text = f"🎨 **Calidad de descarga nhentai**\n\n"
+        text += f"**HD** {hd_status} - Alta calidad (imágenes originales)\n"
+        text += f"**SD** {sd_status} - Miniaturas (menor tamaño)\n\n"
+        text += f"Selecciona tu calidad preferida:"
+        keyboard = [
+            [
+                InlineKeyboardButton(f"{hd_status} HD", callback_data="nhq_hd"),
+                InlineKeyboardButton(f"{sd_status} SD", callback_data="nhq_sd")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            await message.edit_text(text, reply_markup=reply_markup)
+        except:
+            await safe_call(message.reply_text, text, reply_markup=reply_markup)
 
     async def _send_document_with_progress(self, chat_id, document_path, caption="", thumb=None, reply_to_message_id=None, user_id=None):
         print(f"[DEBUG] Intentando enviar: {document_path}, tamaño: {os.path.getsize(document_path) if os.path.exists(document_path) else 'NO EXISTE'}")
@@ -499,6 +531,7 @@ class NekoTelegram:
     async def lista_cmd(self):
         await self.app.set_bot_commands([
             BotCommand("nh", "Descarga un doujin de nhentai"),
+            BotCommand("nhq", "Configurar calidad de descarga nhentai (HD/SD)"),
             BotCommand("3h", "Descarga un doujin de 3hentai"),
             BotCommand("snh", "Busca doujins por filtros en nhentai"),
             BotCommand("s3h", "Busca doujins por filtros en 3hentai"),
@@ -554,6 +587,10 @@ class NekoTelegram:
                     await safe_call(message.reply_text, "❌ Modo premium **desactivado**\nAhora los archivos > 1995 MB se comprimirán automáticamente")
                 else:
                     await safe_call(message.reply_text, "❌ Usa: `/premium on` o `/premium off`")
+            return
+
+        if text.startswith("/nhq"):
+            await self._show_nh_quality_menu(message, user_id)
             return
 
         if text.startswith("/listfiles"):
@@ -1017,7 +1054,8 @@ class NekoTelegram:
                     await safe_call(message.reply_text, "Formato -p inválido")
                     return
             format_choice = user_settings.get(user_id, "cbz")
-            result = self.neko.vnh(code) if command == "/nh" else self.neko.v3h(code)
+            quality_choice = user_nh_quality.get(user_id, "hd")
+            result = self.neko.vnh(code, quality_choice) if command == "/nh" else self.neko.v3h(code)
             if single_page:
                 images = result.get("image_links", [])
                 if images and 0 < single_page <= len(images):
@@ -2040,28 +2078,42 @@ class NekoTelegram:
         if "error" in result:
             await safe_call(message.reply_text, f"Error: `{result['error']}`")
             return
-        resultados = result if isinstance(result, list) else result.get("resultados", [])
+        
+        total_resultados = result.get("total_resultados", 0)
+        total_paginas = result.get("total_paginas", 0)
+        pagina_actual = result.get("pagina_actual", 1)
+        termino = result.get("termino_busqueda", "")
+        resultados = result.get("resultados", [])
+        
+        info_text = f"🔍 **Búsqueda:** {termino}\n"
+        info_text += f"📊 **Resultados:** {total_resultados}\n"
+        info_text += f"📄 **Páginas:** {pagina_actual}/{total_paginas}\n\n"
+        
+        await safe_call(message.reply_text, info_text)
+        
         if not resultados:
             await safe_call(message.reply_text, "No se encontraron resultados")
             return
+        
         download_tasks = []
         for item in resultados:
             code = item.get("code") or item.get("codigo", "")
             nombre = item.get("title") or item.get("nombre", "Sin titulo")
             miniatura = item.get("thumbnail") or item.get("miniatura", "")
+            num_pages = item.get("num_pages", 0)
             if miniatura.startswith("//"):
                 miniatura = f"https:{miniatura}"
             if code and miniatura:
-                download_tasks.append((miniatura, nombre, code))
+                download_tasks.append((miniatura, nombre, code, num_pages))
             elif code:
-                await safe_call(message.reply_text, f"**{nombre}**\nCódigo: `{code}`")
-        for miniatura, nombre, code in download_tasks:
+                await safe_call(message.reply_text, f"**{nombre}**\nCódigo: `{code}`\nPáginas: {num_pages}")
+        for miniatura, nombre, code, num_pages in download_tasks:
             temp_path = await self._prepare_image_for_telegram(miniatura)
             if temp_path:
-                await safe_call(message.reply_photo, temp_path, caption=f"**{nombre}**\nCódigo: `{code}`")
+                await safe_call(message.reply_photo, temp_path, caption=f"**{nombre}**\nCódigo: `{code}`\nPáginas: {num_pages}")
                 os.remove(temp_path)
             else:
-                await safe_call(message.reply_text, f"**{nombre}**\nCódigo: `{code}`")
+                await safe_call(message.reply_text, f"**{nombre}**\nCódigo: `{code}`\nPáginas: {num_pages}")
         await asyncio.sleep(0.2)
     
     def _format_tags(self, tags):
