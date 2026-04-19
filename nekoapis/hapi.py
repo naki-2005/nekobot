@@ -204,159 +204,118 @@ class NakiBotAPI:
                 'error': str(e)
             }
 
-    def vnh(self, code):
+    def vnh(self, code, quality="hd"):
         max_retries = 3
         retry_delay = 2
         
         for attempt in range(max_retries):
             try:
-                if not self._create_driver():
-                    raise Exception("No se pudo crear el driver de Chrome")
+                api_url = f"https://nhentai.net/api/v2/galleries/{code}"
+                response = self.session.get(api_url, timeout=30)
                 
-                url = f"https://nhentai.net/g/{code}/"
-                
-                self.driver.get(url)
-                
-                html_content = ""
-                
-                for wait_attempt in range(3):
-                    wait_time = 3 + wait_attempt * 2
-                    time.sleep(wait_time)
-                    
-                    page_source = self.driver.page_source
-                    if "Just a moment" in page_source or "Verifying you are human" in page_source:
-                        time.sleep(5)
+                if response.status_code != 200:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
                         continue
-                    
-                    if "gallery" in page_source.lower() or "cover" in page_source.lower():
-                        html_content = page_source
-                        break
+                    return {
+                        'title': '',
+                        'code': int(code) if str(code).isdigit() else 0,
+                        'cover_image': '',
+                        'tags': {},
+                        'image_links': [],
+                        'success': False,
+                        'error': f"API error: {response.status_code}"
+                    }
                 
-                if not html_content or len(html_content) < 100:
-                    raise Exception("El contenido HTML parece estar vacío o es muy corto")
+                data = response.json()
                 
-                soup = BeautifulSoup(html_content, 'html.parser')
-                
-                title_element = soup.find('h1', class_='title')
                 title = ""
-                if title_element:
-                    title_parts = []
-                    for span in title_element.find_all('span', class_=True):
-                        title_parts.append(span.get_text(strip=True))
-                    title = ' '.join(title_parts)
+                if 'title' in data:
+                    if data['title'].get('pretty'):
+                        title = data['title']['pretty']
+                    elif data['title'].get('english'):
+                        title = data['title']['english']
+                    elif data['title'].get('japanese'):
+                        title = data['title']['japanese']
                 
                 tags_dict = {}
-                tags_section = soup.find('section', id='tags')
-                if tags_section:
-                    for tag_container in tags_section.find_all('div', class_='tag-container'):
-                        field_name = tag_container.get_text(strip=True).split(':')[0].strip()
-                        tags = []
-                        for tag_link in tag_container.find_all('a', class_='tag'):
-                            tag_name = tag_link.find('span', class_='name')
-                            if tag_name:
-                                tags.append(tag_name.get_text(strip=True))
-                        if tags:
-                            tags_dict[field_name] = tags
+                if 'tags' in data:
+                    for tag in data['tags']:
+                        tag_type = tag.get('type', 'unknown')
+                        tag_name = tag.get('name', '')
+                        if tag_type not in tags_dict:
+                            tags_dict[tag_type] = []
+                        tags_dict[tag_type].append(tag_name)
                 
-                gallery_id = None
-                pattern = re.compile(r'//t[1249]\.nhentai\.net/galleries/(\d+)/(\d+)t\.(webp|jpg|png)')
-                
-                for img in soup.find_all('img'):
-                    src = img.get('src') or img.get('data-src', '')
-                    if src:
-                        match = pattern.search(src)
-                        if match:
-                            gallery_id = match.group(1)
-                            break
+                media_id = data.get('media_id', '')
+                num_pages = data.get('num_pages', 0)
                 
                 image_links = []
+                if media_id and num_pages > 0:
+                    for page_num in range(1, num_pages + 1):
+                        if quality == "thumb":
+                            image_link = f"https://t2.nhentai.net/galleries/{media_id}/{page_num}t.webp"
+                        else:
+                            image_link = f"https://i2.nhentai.net/galleries/{media_id}/{page_num}.webp"
+                        image_links.append(image_link)
+                
                 cover_image = ""
-                
-                if gallery_id:
-                    total_pages_from_tags = 0
-                    if 'Pages' in tags_dict and tags_dict['Pages']:
-                        try:
-                            total_pages_from_tags = int(tags_dict['Pages'][0])
-                        except (ValueError, IndexError):
-                            pass
-                    
-                    found_thumbnails = []
-                    for img in soup.find_all('img'):
-                        src = img.get('src') or img.get('data-src', '')
-                        if src:
-                            match = pattern.search(src)
-                            if match:
-                                page_num = match.group(2)
-                                ext = match.group(3)
-                                found_thumbnails.append({
-                                    'page_num': int(page_num),
-                                    'ext': ext
-                                })
-                    
-                    found_thumbnails.sort(key=lambda x: x['page_num'])
-                    
-                    if total_pages_from_tags == 0 and found_thumbnails:
-                        total_pages_from_tags = found_thumbnails[-1]['page_num']
-                    
-                    if total_pages_from_tags > 0:
-                        extensions_count = {}
-                        for thumb in found_thumbnails:
-                            ext = thumb['ext']
-                            extensions_count[ext] = extensions_count.get(ext, 0) + 1
-                        
-                        default_ext = 'jpg'
-                        if extensions_count:
-                            default_ext = max(extensions_count.items(), key=lambda x: x[1])[0]
-                        
-                        page_ext_map = {thumb['page_num']: thumb['ext'] for thumb in found_thumbnails}
-                        
-                        for page_num in range(1, total_pages_from_tags + 1):
-                            ext = page_ext_map.get(page_num, default_ext)
-                            image_link = f"https://i2.nhentai.net/galleries/{gallery_id}/{page_num}.{ext}"
-                            image_links.append(image_link)
+                if data.get('cover', {}).get('path'):
+                    if quality == "thumb":
+                        cover_path = data['cover']['path'].replace('cover.webp', 'thumb.webp')
+                        cover_image = f"https://t2.nhentai.net/{cover_path}"
                     else:
-                        for thumb in found_thumbnails:
-                            image_link = f"https://i2.nhentai.net/galleries/{gallery_id}/{thumb['page_num']}.{thumb['ext']}"
-                            image_links.append(image_link)
-                    
-                    if image_links:
-                        cover_image = image_links[0]
+                        cover_image = f"https://i2.nhentai.net/{data['cover']['path']}"
                 
-                result = {
+                return {
                     'title': title,
-                    'code': int(code),
+                    'code': data.get('id', int(code) if str(code).isdigit() else 0),
                     'cover_image': cover_image,
                     'tags': tags_dict,
                     'image_links': image_links,
                     'success': True
                 }
                 
-                return result
-                
-            except Exception as e:
+            except requests.exceptions.RequestException as e:
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay * (attempt + 1))
                     continue
                 return {
                     'title': '',
-                    'code': int(code) if code.isdigit() else 0,
+                    'code': int(code) if str(code).isdigit() else 0,
                     'cover_image': '',
                     'tags': {},
                     'image_links': [],
                     'success': False,
                     'error': str(e)[:100]
                 }
-            finally:
-                if self.driver:
-                    try:
-                        self.driver.quit()
-                        self.driver = None
-                    except:
-                        pass
+            except json.JSONDecodeError as e:
+                return {
+                    'title': '',
+                    'code': int(code) if str(code).isdigit() else 0,
+                    'cover_image': '',
+                    'tags': {},
+                    'image_links': [],
+                    'success': False,
+                    'error': f"JSON decode error: {str(e)}"
+                }
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+                return {
+                    'title': '',
+                    'code': int(code) if str(code).isdigit() else 0,
+                    'cover_image': '',
+                    'tags': {},
+                    'image_links': [],
+                    'success': False,
+                    'error': str(e)[:100]
+                }
         
         return {
             'title': '',
-            'code': int(code) if code.isdigit() else 0,
+            'code': int(code) if str(code).isdigit() else 0,
             'cover_image': '',
             'tags': {},
             'image_links': [],
