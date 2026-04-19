@@ -225,12 +225,12 @@ class Neko:
             return [{"code": str(item)} for item in result]
         return result
 
-    def vnh(self, code):
-        return self.hapi.vnh(code)
+    def vnh(self, code, quality="hd"):
+        return self.hapi.vnh(code, quality)
 
     def v3h(self, code):
         return self.hapi.v3h(code)
-
+        
     def hito(self, g, p=1):
         result = self.hapi.hito(g, p)
         if "error" in result:
