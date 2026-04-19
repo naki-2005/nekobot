@@ -13,6 +13,9 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from PIL import Image
+from collections import defaultdict
+from functools import lru_cache
+import threading
 
 class NakiBotAPI:
     def __init__(self):
@@ -27,43 +30,83 @@ class NakiBotAPI:
             'Upgrade-Insecure-Requests': '1',
         }
         self.driver = None
+        self.tag_cache = {}
+        self.tag_cache_lock = threading.Lock()
+        self.last_request_time = 0
+        self.min_request_interval = 4.0
     
-    def _create_driver(self):
-        try:
-            chrome_options = Options()
-            chrome_options.add_argument('--headless')
-            chrome_options.add_argument('--no-sandbox')
-            chrome_options.add_argument('--disable-dev-shm-usage')
-            chrome_options.add_argument('--disable-gpu')
-            chrome_options.add_argument('--window-size=1920,1080')
-            chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
+    def _rate_limit(self):
+        current_time = time.time()
+        elapsed = current_time - self.last_request_time
+        if elapsed < self.min_request_interval:
+            time.sleep(self.min_request_interval - elapsed)
+        self.last_request_time = time.time()
+    
+    def _fetch_tags_by_ids(self, tag_ids):
+        if not tag_ids:
+            return {}
+        
+        with self.tag_cache_lock:
+            cached_tags = {tid: self.tag_cache[tid] for tid in tag_ids if tid in self.tag_cache}
+            missing_ids = [tid for tid in tag_ids if tid not in self.tag_cache]
+        
+        if not missing_ids:
+            return cached_tags
+        
+        all_tag_data = {}
+        all_tag_data.update(cached_tags)
+        
+        for i in range(0, len(missing_ids), 100):
+            batch = missing_ids[i:i+100]
+            ids_param = ','.join(str(tid) for tid in batch)
+            api_url = f"https://nhentai.net/api/v2/tags/ids?ids={ids_param}"
             
-            self.driver = webdriver.Chrome(options=chrome_options)
-            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            return True
-        except Exception as e:
-            try:
-                base_dir = Path(__file__).parent.absolute()
-                selenium_dir = base_dir / "selenium"
-                
-                chrome_path = selenium_dir / "chrome"
-                chromedriver_path = selenium_dir / "chromedriver"
-                
-                if chrome_path.exists():
-                    chrome_options.binary_location = str(chrome_path)
-                
-                if chromedriver_path.exists():
-                    service = Service(executable_path=str(chromedriver_path))
-                    self.driver = webdriver.Chrome(service=service, options=chrome_options)
-                else:
-                    self.driver = webdriver.Chrome(options=chrome_options)
-                
-                self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-                return True
-            except Exception as e2:
-                return False
+            self._rate_limit()
+            
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    response = self.session.get(api_url, timeout=30)
+                    if response.status_code == 200:
+                        data = response.json()
+                        with self.tag_cache_lock:
+                            for tag in data:
+                                tag_id = tag.get('id')
+                                if tag_id:
+                                    self.tag_cache[tag_id] = tag
+                                    all_tag_data[tag_id] = tag
+                        break
+                    else:
+                        if attempt < max_retries - 1:
+                            time.sleep(2)
+                            continue
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        time.sleep(2)
+                        continue
+        
+        return all_tag_data
+    
+    def _format_tags_for_display(self, tag_data):
+        if not tag_data:
+            return ""
+        
+        tags_by_type = defaultdict(list)
+        for tag_id, tag_info in tag_data.items():
+            tag_type = tag_info.get('type', 'unknown')
+            tag_name = tag_info.get('name', '')
+            if tag_name:
+                tags_by_type[tag_type].append(tag_name)
+        
+        tag_lines = []
+        for tag_type, tag_names in tags_by_type.items():
+            if tag_names:
+                tag_names_str = ', '.join(tag_names[:10])
+                if len(tag_names) > 10:
+                    tag_names_str += f" (+{len(tag_names)-10} más)"
+                tag_lines.append(f"**{tag_type}:** {tag_names_str}")
+        
+        return "\n".join(tag_lines)
     
     def snh(self, search_term, page=1):
         api_url = f"https://nhentai.net/api/v2/search?query={search_term}&page={page}"
@@ -73,6 +116,7 @@ class NakiBotAPI:
         
         for attempt in range(max_retries):
             try:
+                self._rate_limit()
                 response = self.session.get(api_url, timeout=30)
                 
                 if response.status_code != 200:
@@ -84,15 +128,28 @@ class NakiBotAPI:
                 data = response.json()
                 
                 results_data = []
+                all_tag_ids = set()
+                
                 for item in data.get('result', []):
+                    tag_ids = item.get('tag_ids', [])
+                    for tid in tag_ids:
+                        all_tag_ids.add(tid)
+                    
                     thumbnail_url = f"https://t2.nhentai.net/{item['thumbnail']}" if item.get('thumbnail') else ''
                     
                     results_data.append({
                         'nombre': item.get('english_title', ''),
                         'miniatura': thumbnail_url,
                         'codigo': str(item.get('id', '')),
-                        'num_pages': item.get('num_pages', 0)
+                        'num_pages': item.get('num_pages', 0),
+                        'tag_ids': tag_ids
                     })
+                
+                tag_data = self._fetch_tags_by_ids(list(all_tag_ids))
+                
+                for result in results_data:
+                    tag_ids = result.pop('tag_ids', [])
+                    result['tags'] = self._format_tags_for_display({tid: tag_data[tid] for tid in tag_ids if tid in tag_data})
                 
                 total = data.get('total', 0)
                 num_pages = data.get('num_pages', 0)
@@ -192,6 +249,7 @@ class NakiBotAPI:
         for attempt in range(max_retries):
             try:
                 api_url = f"https://nhentai.net/api/v2/galleries/{code}"
+                self._rate_limit()
                 response = self.session.get(api_url, timeout=30)
                 
                 if response.status_code != 200:
@@ -220,10 +278,14 @@ class NakiBotAPI:
                         title = data['title']['japanese']
                 
                 tags_dict = {}
+                tag_ids = []
                 if 'tags' in data:
                     for tag in data['tags']:
                         tag_type = tag.get('type', 'unknown')
                         tag_name = tag.get('name', '')
+                        tag_id = tag.get('id')
+                        if tag_id:
+                            tag_ids.append(tag_id)
                         if tag_type not in tags_dict:
                             tags_dict[tag_type] = []
                         tags_dict[tag_type].append(tag_name)
