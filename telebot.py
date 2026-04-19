@@ -127,9 +127,7 @@ class NakiBotAPI:
         tag_lines = []
         for tag_type, tag_names in tags_by_type.items():
             if tag_names:
-                tag_names_str = ', '.join(tag_names[:10])
-                if len(tag_names) > 10:
-                    tag_names_str += f" (+{len(tag_names)-10} más)"
+                tag_names_str = ', '.join(tag_names)
                 tag_lines.append(f"**{tag_type}:** {tag_names_str}")
         
         return "\n".join(tag_lines)
