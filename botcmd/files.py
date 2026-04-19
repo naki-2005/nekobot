@@ -4,6 +4,7 @@ import tempfile
 import shutil
 import re
 from pyrogram.types import Message
+from botcmd.utils import safe_call
 
 class FileCommands:
     def __init__(self, bot):
