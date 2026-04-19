@@ -66,69 +66,45 @@ class NakiBotAPI:
                 return False
     
     def snh(self, search_term, page=1):
-        url = f"https://nhentai.net/search/?q={search_term}&page={page}"
+        api_url = f"https://nhentai.net/api/v2/search?query={search_term}&page={page}"
         
         max_retries = 3
         retry_delay = 2
         
         for attempt in range(max_retries):
             try:
-                response = self.session.get(url, timeout=30)
+                response = self.session.get(api_url, timeout=30)
                 
                 if response.status_code != 200:
-                    time.sleep(retry_delay)
-                    continue
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    return {"error": f"API error: {response.status_code}"}
                 
-                soup = BeautifulSoup(response.text, 'html.parser')
+                data = response.json()
                 
                 results_data = []
-                
-                h1_element = soup.find('h1')
-                total_results = 0
-                if h1_element:
-                    text = h1_element.get_text(strip=True)
-                    match = re.search(r'([\d,]+)\s+results', text)
-                    if match:
-                        total_results = int(match.group(1).replace(',', ''))
-                
-                total_pages = math.ceil(total_results / 25)
-                
-                gallery_divs = soup.find_all('div', class_='gallery')
-                
-                for gallery in gallery_divs[:25]:
-                    link_element = gallery.find('a', class_='cover')
-                    if not link_element:
-                        continue
-                    
-                    href = link_element.get('href', '')
-                    code = ''
-                    if href and '/g/' in href:
-                        code_match = re.search(r'/g/(\d+)/', href)
-                        if code_match:
-                            code = code_match.group(1)
-                    
-                    img_element = gallery.find('img', class_='lazyload')
-                    thumbnail = ''
-                    if img_element:
-                        thumbnail = img_element.get('data-src', '')
-                        if not thumbnail:
-                            thumbnail = img_element.get('src', '')
-                    
-                    caption_div = gallery.find('div', class_='caption')
-                    name = caption_div.get_text(strip=True) if caption_div else ''
+                for item in data.get('result', []):
+                    thumbnail_url = f"https://t2.nhentai.net/{item['thumbnail']}" if item.get('thumbnail') else ''
                     
                     results_data.append({
-                        'nombre': name,
-                        'miniatura': thumbnail,
-                        'codigo': code
+                        'nombre': item.get('english_title', ''),
+                        'miniatura': thumbnail_url,
+                        'codigo': str(item.get('id', '')),
+                        'num_pages': item.get('num_pages', 0)
                     })
                 
+                total = data.get('total', 0)
+                num_pages = data.get('num_pages', 0)
+                per_page = data.get('per_page', 25)
+                
                 return {
-                    'total_resultados': total_results,
-                    'total_paginas': total_pages,
+                    'total_resultados': total,
+                    'total_paginas': num_pages,
                     'pagina_actual': page,
                     'termino_busqueda': search_term,
-                    'resultados': results_data
+                    'resultados': results_data,
+                    'resultados_por_pagina': per_page
                 }
                 
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
@@ -136,6 +112,11 @@ class NakiBotAPI:
                     time.sleep(retry_delay * (attempt + 1))
                     continue
                 return {"error": "Timeout o error de conexión después de múltiples intentos"}
+            except json.JSONDecodeError:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+                return {"error": "Error decodificando la respuesta JSON"}
             except Exception as e:
                 return {"error": f"Error: {str(e)}"}
         
