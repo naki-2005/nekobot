@@ -134,6 +134,7 @@ class NakiBotAPI:
         
         return "\n".join(tag_lines)
     
+    
     def snh(self, search_term, page=1):
         api_url = f"https://nhentai.net/api/v2/search?query={search_term}&page={page}"
         
@@ -267,7 +268,7 @@ class NakiBotAPI:
                 'resultados': [],
                 'error': str(e)
             }
-
+            
     def vnh(self, code, quality="hd"):
         max_retries = 3
         retry_delay = 2
@@ -1141,7 +1142,135 @@ class NekoTelegram:
             await self._show_nh_quality_menu(message, user_id)
             return
 
-        if text.startswith("/listfiles"):
+        elif text.startswith("/snh ") or text.startswith("/s3h "):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "Usa: `/snh búsqueda -p página` o `/s3h búsqueda -p página`\nEjemplos: `/snh yuri -p 2` o `/snh yuri -p 2,3` o `/snh yuri -p 2-4`")
+                return
+            
+            full_search = parts[1]
+            search_term = full_search
+            pages = [1]
+            
+            if " -p " in full_search:
+                parts_search = full_search.split(" -p ")
+                search_term = parts_search[0]
+                page_param = parts_search[1].strip()
+                
+                if "," in page_param:
+                    pages = [int(p.strip()) for p in page_param.split(",")]
+                elif "-" in page_param:
+                    start_end = page_param.split("-")
+                    if len(start_end) == 2:
+                        start = int(start_end[0].strip())
+                        end = int(start_end[1].strip())
+                        pages = list(range(start, end + 1))
+                else:
+                    pages = [int(page_param)]
+            
+            if text.startswith("/snh "):
+                for page in pages:
+                    result = self.naki_api.snh(search_term, page)
+                    await self._process_search_json(message, result, user_id)
+                    if len(pages) > 1 and page != pages[-1]:
+                        await safe_call(message.reply_text, f"📄 Mostrando página {page} de {len(pages)}")
+            else:
+                for page in pages:
+                    result = self.neko.s3h(search_term, page)
+                    await self._process_search_json(message, result, user_id)
+                    if len(pages) > 1 and page != pages[-1]:
+                        await safe_call(message.reply_text, f"📄 Mostrando página {page} de {len(pages)}")
+
+        elif text.startswith("/nh ") or text.startswith("/3h "):
+            parts = text.split()
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "Usa: `/nh codigo1 codigo2 codigo3` o `/3h https://3hentai.net/d/12345`\nOpciones: `-p 5` `-s 2` `-f 4`")
+                return
+            
+            command = parts[0]
+            raw_inputs = parts[1:]
+            
+            codes = []
+            for inp in raw_inputs:
+                if inp.startswith("-"):
+                    break
+                if "nhentai.net/g/" in inp:
+                    import re
+                    match = re.search(r'/g/(\d+)', inp)
+                    if match:
+                        codes.append(match.group(1))
+                elif "3hentai.net/d/" in inp or "es.3hentai.net/d/" in inp:
+                    import re
+                    match = re.search(r'/d/(\d+)', inp)
+                    if match:
+                        codes.append(match.group(1))
+                else:
+                    codes.append(inp)
+            
+            if not codes:
+                await safe_call(message.reply_text, "No se encontraron códigos válidos")
+                return
+            
+            start_page = 1
+            end_page = None
+            single_page = None
+            
+            if "-s" in text:
+                try:
+                    s_idx = text.index("-s")
+                    start_page = int(text[s_idx:].split()[1])
+                except:
+                    await safe_call(message.reply_text, "Formato -s inválido")
+                    return
+            if "-f" in text:
+                try:
+                    f_idx = text.index("-f")
+                    end_page = int(text[f_idx:].split()[1])
+                except:
+                    await safe_call(message.reply_text, "Formato -f inválido")
+                    return
+            if "-p" in text:
+                try:
+                    p_idx = text.index("-p")
+                    single_page = int(text[p_idx:].split()[1])
+                except:
+                    await safe_call(message.reply_text, "Formato -p inválido")
+                    return
+            
+            format_choice = user_settings.get(user_id, "cbz")
+            quality_choice = user_nh_quality.get(user_id, "hd")
+            
+            for code in codes:
+                if command == "/nh":
+                    result = self.naki_api.vnh(code, quality_choice)
+                else:
+                    result = self.neko.v3h(code)
+                
+                if "error" in result:
+                    await safe_call(message.reply_text, f"Error con código {code}: {result['error']}")
+                    continue
+                
+                if single_page:
+                    images = result.get("image_links", [])
+                    if images and 0 < single_page <= len(images):
+                        selected_url = images[single_page-1]
+                        temp_path = await self._prepare_image_for_telegram(selected_url)
+                        if temp_path:
+                            await safe_call(message.reply_photo, temp_path, caption=f"Código: {code} - Página {single_page}/{len(images)}")
+                            os.remove(temp_path)
+                        else:
+                            await safe_call(message.reply_text, f"Código {code}: Error descargando página {single_page}")
+                    else:
+                        await safe_call(message.reply_text, f"Código {code}: Página {single_page} no encontrada")
+                elif format_choice == "raw":
+                    await self._process_gallery_json_with_range(message, result, code, format_choice, start_page, end_page, user_id)
+                else:
+                    await self._process_gallery_with_format(message, result, code, format_choice, start_page, end_page, user_id)
+                
+                if len(codes) > 1 and code != codes[-1]:
+                    await safe_call(message.reply_text, f"✅ Procesado {code}, continuando...")
+
+        if text.startswith("/listfiles") or text.startwith("/ls"):
             vault_dir = os.path.join(os.getcwd(), "vault")
             if not os.path.exists(vault_dir):
                 await safe_call(message.reply_text, "❌ La carpeta vault no existe")
@@ -1625,18 +1754,6 @@ class NekoTelegram:
             else:
                 await self._process_gallery_with_format(message, result, code, format_choice, start_page, end_page, user_id)
         
-        elif text.startswith("/snh ") or text.startswith("/s3h "):
-            parts = text.split(maxsplit=1)
-            if len(parts) < 2:
-                await safe_call(message.reply_text, "Usa: `/snh busqueda` o `/s3h busqueda`")
-                return
-            search = parts[1]
-            if text.startswith("/snh "):
-                result = self.naki_api.snh(search)
-            else:
-                result = self.neko.s3h(search)
-            await self._process_search_json(message, result, user_id)
-
         elif text.startswith("/hito"):
             parts = text.split()
             if len(parts) < 2:
