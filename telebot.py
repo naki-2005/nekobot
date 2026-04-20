@@ -1268,7 +1268,7 @@ class NekoTelegram:
                 if len(codes) > 1 and code != codes[-1]:
                     await safe_call(message.reply_text, f"✅ Procesado {code}, continuando...")
 
-        if text.startswith("/listfiles") or text.startwith("/ls"):
+        if text.startswith("/listfiles") or text.startswith("/ls"):
             vault_dir = os.path.join(os.getcwd(), "vault")
             if not os.path.exists(vault_dir):
                 await safe_call(message.reply_text, "❌ La carpeta vault no existe")
