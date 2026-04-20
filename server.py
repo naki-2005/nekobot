@@ -43,6 +43,12 @@ def split_codes(code_string):
     codes = re.split(r'[,\s;/]+', code_string)
     return [c.strip() for c in codes if c.strip()]
 
+def split_magnets(magnet_string):
+    if not magnet_string:
+        return []
+    magnets = re.split(r'[\n\r]+', magnet_string)
+    return [m.strip() for m in magnets if m.strip()]
+
 def process_queue(queue_id, codes, mode, action):
     queue = download_queues[queue_id]
     results = []
@@ -630,7 +636,24 @@ NEKOTOOLS_HTML = '''
         input, textarea, select { margin: 5px 0; padding: 8px; }
         button { padding: 8px 15px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
         button:hover { background-color: #0056b3; }
+        .magnet-input-container { position: relative; display: flex; align-items: flex-start; gap: 10px; }
+        .magnet-textarea { flex: 1; }
+        .clear-magnets-btn { 
+            padding: 8px 12px; 
+            background-color: #dc3545; 
+            color: white; 
+            border: none; 
+            border-radius: 4px; 
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .clear-magnets-btn:hover { background-color: #c82333; }
     </style>
+    <script>
+        function clearMagnets() {
+            document.getElementById('torrent_magnets').value = '';
+        }
+    </script>
 </head>
 <body>
     <div class="nav-bar">
@@ -642,10 +665,13 @@ NEKOTOOLS_HTML = '''
     <div class="section">
         <h2>Descargar Torrent / Magnet</h2>
         <form method="post">
-            Magnet Link: <input type="text" name="torrent_magnet" placeholder="magnet:?xt=urn:btih:..." size="80" required>
+            <div class="magnet-input-container">
+                <textarea id="torrent_magnets" name="torrent_magnets" placeholder="magnet:?xt=urn:btih:...&#10;magnet:?xt=urn:btih:...&#10;(Un magnet por línea)" rows="4" cols="80" class="magnet-textarea" required></textarea>
+                <button type="button" class="clear-magnets-btn" onclick="clearMagnets()">✗ Borrar</button>
+            </div>
             <input type="hidden" name="action" value="torrent">
             <br>
-            <button type="submit">Iniciar Descarga</button>
+            <button type="submit">Iniciar Descargas</button>
         </form>
         <p>Monitorear progreso: <a href="/tdl">/tdl</a> (actualizar automáticamente)</p>
     </div>
@@ -762,6 +788,80 @@ NEKOTOOLS_HTML = '''
         <h2>Resultado:</h2>
         <pre>{{result_text}}</pre>
     </div>
+</body>
+</html>
+'''
+
+TDL_HTML = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Torrent Downloads Monitor</title>
+    <meta http-equiv="refresh" content="2">
+    <style>
+        body { font-family: monospace; padding: 20px; background-color: #1e1e1e; color: #d4d4d4; }
+        h1 { color: #4ec9b0; }
+        .download { 
+            background-color: #2d2d2d; 
+            margin: 10px 0; 
+            padding: 15px; 
+            border-radius: 8px;
+            border-left: 4px solid #4ec9b0;
+        }
+        .download.completed { border-left-color: #6a9955; }
+        .download.failed { border-left-color: #f48771; }
+        .download-name { font-weight: bold; color: #9cdcfe; }
+        .download-progress { color: #ce9178; }
+        .download-speed { color: #b5cea8; }
+        .status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-left: 10px;
+        }
+        .status-completed { background-color: #6a9955; color: white; }
+        .status-downloading { background-color: #4ec9b0; color: #1e1e1e; }
+        .status-failed { background-color: #f48771; color: white; }
+        .status-starting { background-color: #dcdcaa; color: #1e1e1e; }
+        .no-downloads { color: #808080; font-style: italic; }
+        .refresh-note { font-size: 12px; color: #808080; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <h1>📥 Descargas Torrent / Magnet</h1>
+    <div id="downloads">
+        {% if active_downloads %}
+            {% for dl in active_downloads %}
+            <div class="download {% if dl.status == 'completed' %}completed{% elif dl.status == 'failed' %}failed{% endif %}">
+                <div class="download-name">
+                    {% if dl.status == 'completed' %}✅{% elif dl.status == 'failed' %}❌{% elif dl.status == 'downloading' %}📥{% else %}⏳{% endif %}
+                    {{ dl.name }}
+                    <span class="status-badge status-{{ dl.status }}">{{ dl.status }}</span>
+                </div>
+                {% if dl.status == 'downloading' %}
+                <div class="download-progress">Progreso: {{ dl.progress|round(1) }}%</div>
+                <div class="download-speed">Velocidad: {{ dl.speed }}</div>
+                <div class="download-bar" style="background-color: #3c3c3c; border-radius: 4px; margin-top: 8px; overflow: hidden;">
+                    <div style="width: {{ dl.progress|round(1) }}%; background-color: #4ec9b0; height: 4px;"></div>
+                </div>
+                {% elif dl.status == 'completed' %}
+                <div class="download-progress">✅ Completado al 100%</div>
+                {% if dl.files %}
+                <div class="download-files" style="margin-top: 8px; font-size: 12px;">
+                    Archivos descargados: {{ dl.files|length }}
+                </div>
+                {% endif %}
+                {% elif dl.status == 'failed' %}
+                <div class="download-progress">❌ Error: {{ dl.error }}</div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="no-downloads">💤 Sin descargas activas</div>
+        {% endif %}
+    </div>
+    <div class="refresh-note">↻ Actualizando automáticamente cada 2 segundos</div>
 </body>
 </html>
 '''
@@ -891,23 +991,17 @@ def torrent_downloads_page():
     
     active_downloads = []
     for did, info in torrent_downloads.items():
-        if info['status'] == 'downloading':
-            active_downloads.append({
-                'id': did,
-                'name': info.get('name', 'Desconocido'),
-                'progress': info.get('progress', 0),
-                'speed': info.get('speed', '0 MB/s')
-            })
+        active_downloads.append({
+            'id': did,
+            'name': info.get('name', 'Desconocido'),
+            'status': info.get('status', 'unknown'),
+            'progress': info.get('progress', 0),
+            'speed': info.get('speed', '0 MB/s'),
+            'error': info.get('error', ''),
+            'files': info.get('files', [])
+        })
     
-    if not active_downloads:
-        return '<div style="font-family: monospace; padding: 10px;">💤 Sin descargas activas</div>'
-    
-    html = '<div style="font-family: monospace; padding: 10px;">'
-    for dl in active_downloads:
-        html += f'📥 {dl["name"]} - {dl["progress"]:.1f}% - {dl["speed"]}<br>'
-    html += '</div>'
-    
-    return html
+    return render_template_string(TDL_HTML, active_downloads=active_downloads)
 
 @app.route("/viewer")
 def viewer():
@@ -1229,32 +1323,47 @@ def nekotools():
         action = request.form.get("action")
         
         if action == "torrent":
-            magnet_link = request.form.get("torrent_magnet")
-            if magnet_link:
-                download_id = str(uuid.uuid4())[:8]
+            magnets_string = request.form.get("torrent_magnets", "").strip()
+            if magnets_string:
+                magnets = split_magnets(magnets_string)
+                download_ids = []
                 
-                download_path = os.path.join(BASE_DIR, "torrents", download_id)
-                os.makedirs(download_path, exist_ok=True)
+                for magnet_link in magnets:
+                    if magnet_link:
+                        download_id = str(uuid.uuid4())[:8]
+                        
+                        # Guardar todo directamente en la carpeta vault/ (sin subcarpeta con ID)
+                        download_path = BASE_DIR
+                        
+                        torrent_downloads[download_id] = {
+                            'id': download_id,
+                            'name': 'Obteniendo nombre...',
+                            'status': 'starting',
+                            'progress': 0,
+                            'speed': '0 MB/s',
+                            'path': download_path
+                        }
+                        
+                        thread = threading.Thread(target=run_async_torrent, args=(download_id, magnet_link, download_path))
+                        thread.daemon = True
+                        thread.start()
+                        
+                        download_ids.append(download_id)
                 
-                torrent_downloads[download_id] = {
-                    'id': download_id,
-                    'name': 'Obteniendo nombre...',
-                    'status': 'starting',
-                    'progress': 0,
-                    'speed': '0 MB/s',
-                    'path': download_path
-                }
-                
-                thread = threading.Thread(target=run_async_torrent, args=(download_id, magnet_link, download_path))
-                thread.daemon = True
-                thread.start()
-                
-                return f"""
-                <h2>Descarga iniciada</h2>
-                <p>ID: {download_id}</p>
-                <p>Monitorear progreso: <a href="/tdl?id={download_id}">/tdl?id={download_id}</a></p>
-                <p><a href="/nekotools">Volver</a></p>
-                """
+                if len(magnets) == 1:
+                    return f"""
+                    <h2>Descarga iniciada</h2>
+                    <p>ID: {download_ids[0]}</p>
+                    <p>Monitorear progreso: <a href="/tdl?id={download_ids[0]}">/tdl?id={download_ids[0]}</a></p>
+                    <p><a href="/nekotools">Volver</a></p>
+                    """
+                else:
+                    return f"""
+                    <h2>Descargas iniciadas</h2>
+                    <p>{len(download_ids)} descargas en progreso</p>
+                    <p>Monitorear todas: <a href="/tdl">/tdl</a></p>
+                    <p><a href="/nekotools">Volver</a></p>
+                    """
         
         elif action == "download_from_json":
             json_file = request.files.get("json_file")
@@ -1319,7 +1428,7 @@ def nekotools():
                 if result:
                     safe_name = neko_instance.clean_name(name)
                     safe_filename = os.path.basename(result)
-                    return f"PDF creado: <a href='/{urllib.parse.quote(safe_filename)}'>{safe_name}.pdf</a><br><a href='/nekotools'>Volver</a>"
+                    return f"PDF creado: <a href='/{urllib.parse.quote(safe_filename)}'>{safe_name}.pdf</a><br><a href='/nekotools'>Volver</a>'"
                 else:
                     return "Error al crear PDF<br><a href='/nekotools'>Volver</a>"
         
