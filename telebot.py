@@ -1193,12 +1193,10 @@ class NekoTelegram:
                 if inp.startswith("-"):
                     break
                 if "nhentai.net/g/" in inp:
-                    import re
                     match = re.search(r'/g/(\d+)', inp)
                     if match:
                         codes.append(match.group(1))
                 elif "3hentai.net/d/" in inp or "es.3hentai.net/d/" in inp:
-                    import re
                     match = re.search(r'/d/(\d+)', inp)
                     if match:
                         codes.append(match.group(1))
