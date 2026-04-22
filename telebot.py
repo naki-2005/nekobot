@@ -15,8 +15,8 @@ import zipfile
 import requests
 from concurrent.futures import ThreadPoolExecutor
 from pyrogram import Client, filters
-from pyrogram.types import Message, BotCommand, InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup
-from pyrogram.errors import FloodWait
+from pyrogram.types import Message, BotCommand, InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup, User
+from pyrogram.errors import FloodWait, PeerIdInvalid
 from neko import Neko
 from nekoapis.mangadex import MangaDex
 from server import run_flask
@@ -44,6 +44,7 @@ premium_enabled = False
 premium_limit = 3995
 normal_limit = 1995
 current_directories = {}
+ftp_base_url = None
 
 def compress_with_7zz(file_path, target_size_mb=1995):
     sevenzz_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "7zz")
@@ -748,13 +749,28 @@ def get_current_directory(user_id):
 def set_current_directory(user_id, path):
     current_directories[user_id] = path
 
-def get_item_by_number(user_id, number):
-    current_dir = get_current_directory(user_id)
-    items = [f for f in os.listdir(current_dir) if not f.startswith('.')]
-    items.sort()
-    if 1 <= number <= len(items):
-        return os.path.join(current_dir, items[number-1]), items[number-1]
-    return None, None
+def get_public_path(absolute_path):
+    vault_dir = os.path.join(os.getcwd(), "vault")
+    if absolute_path.startswith(vault_dir):
+        relative = os.path.relpath(absolute_path, vault_dir)
+        if relative == '.':
+            return '/'
+        return '/' + relative.replace('\\', '/')
+    return absolute_path
+
+def get_display_path(absolute_path):
+    public_path = get_public_path(absolute_path)
+    if ftp_base_url:
+        base = ftp_base_url.rstrip('/')
+        return f"{base}{public_path}"
+    return public_path
+
+def get_upload_message(file_path):
+    display_path = get_display_path(file_path)
+    if ftp_base_url:
+        return f"✅ Archivo disponible en {display_path}"
+    else:
+        return f"✅ Archivo guardado en {display_path}"
 
 class NekoTelegram:
     def __init__(self, api_id, api_hash, bot_token, admin_list):
@@ -1163,9 +1179,9 @@ class NekoTelegram:
             BotCommand("mkdir", "Crea una nueva carpeta en el directorio actual"),
             BotCommand("cd", "Cambia el directorio actual"),
             BotCommand("mv", "Renombra o mueve un archivo/carpeta"),
-            BotCommand("zip", "Comprime archivos en ZIP (usa -nd para no borrar originales)"),
-            BotCommand("7z", "Comprime archivos en 7Z (usa -nd para no borrar originales)"),
-            BotCommand("ls", "Lista archivos del directorio actual")
+            BotCommand("ls", "Lista archivos del directorio actual"),
+            BotCommand("setftp", "Configurar URL base FTP (solo admins)"),
+            BotCommand("info", "Obtener información de un usuario")
         ])
         print("Comandos configurados en el bot")
 
@@ -1199,6 +1215,85 @@ class NekoTelegram:
                     await safe_call(message.reply_text, "❌ Modo premium **desactivado**\nAhora los archivos > 1995 MB se comprimirán automáticamente")
                 else:
                     await safe_call(message.reply_text, "❌ Usa: `/premium on` o `/premium off`")
+            return
+
+        if text.startswith("/setftp"):
+            if not self.is_admin(user_id, username):
+                await safe_call(message.reply_text, "❌ Solo administradores pueden usar este comando")
+                return
+            
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                global ftp_base_url
+                if ftp_base_url:
+                    await safe_call(message.reply_text, f"🌐 URL FTP actual: `{ftp_base_url}`\nUsa `/setftp https://tu-dominio.com` para cambiar o `/setftp` para desactivar")
+                else:
+                    await safe_call(message.reply_text, "🌐 FTP no configurado\nUsa `/setftp https://tu-dominio.com` para configurar")
+                return
+            
+            new_url = parts[1].strip()
+            if new_url.lower() == "off" or new_url.lower() == "none":
+                ftp_base_url = None
+                await safe_call(message.reply_text, "✅ FTP desactivado. Los mensajes mostrarán rutas locales.")
+            else:
+                ftp_base_url = new_url.rstrip('/')
+                await safe_call(message.reply_text, f"✅ URL FTP configurada: `{ftp_base_url}`\nLos mensajes de subida mostrarán enlaces públicos.")
+            return
+
+        if text.startswith("/info"):
+            target = None
+            if len(text.split()) > 1:
+                identifier = text.split()[1]
+                if identifier.startswith('@'):
+                    try:
+                        target = await self.app.get_users(identifier)
+                    except:
+                        target = None
+                elif identifier.isdigit():
+                    try:
+                        target = await self.app.get_users(int(identifier))
+                    except:
+                        target = None
+                else:
+                    try:
+                        target = await self.app.get_users(identifier)
+                    except:
+                        target = None
+            else:
+                target = message.from_user
+            
+            if not target:
+                await safe_call(message.reply_text, "No se pudo obtener la información del usuario")
+                return
+            
+            try:
+                user_photos = []
+                async for photo in self.app.get_chat_photos(target.id, limit=1):
+                    user_photos.append(photo)
+                
+                caption = f"**Información del usuario**\n\n"
+                caption += f"**Nombre:** {target.first_name or 'N/A'}"
+                if target.last_name:
+                    caption += f" {target.last_name}"
+                caption += f"\n**Usuario:** @{target.username}" if target.username else "\n**Usuario:** No tiene"
+                caption += f"\n**ID:** `{target.id}`"
+                caption += f"\n**Es bot:** {'Sí' if target.is_bot else 'No'}"
+                caption += f"\n**Verificado:** {'Sí' if target.is_verified else 'No'}"
+                caption += f"\n**Premium:** {'Sí' if target.is_premium else 'No'}"
+                if hasattr(target, 'status') and target.status:
+                    caption += f"\n**Estado:** {target.status}"
+                if hasattr(target, 'language_code') and target.language_code:
+                    caption += f"\n**Idioma:** {target.language_code}"
+                
+                if user_photos:
+                    photo_file = await self.app.download_media(user_photos[0].file_id)
+                    await safe_call(message.reply_photo, photo_file, caption=caption)
+                    if os.path.exists(photo_file):
+                        os.remove(photo_file)
+                else:
+                    await safe_call(message.reply_text, caption)
+            except Exception as e:
+                await safe_call(message.reply_text, "No se pudo obtener la información del usuario")
             return
 
         if text.startswith("/nhq"):
@@ -1349,7 +1444,8 @@ class NekoTelegram:
                     files_list.append(f"{idx}. {item} ({size_mb:.2f} MB)")
                 else:
                     files_list.append(f"{idx}. 📁 {item}/")
-            message_text = f"📁 **Directorio actual:** `{current_dir}`\n\n" + "\n".join(files_list[:50])
+            display_dir = get_public_path(current_dir)
+            message_text = f"📁 **Directorio actual:** `{display_dir}`\n\n" + "\n".join(files_list[:50])
             if len(files_list) > 50:
                 message_text += f"\n\n... y {len(files_list) - 50} archivos más"
             await safe_call(message.reply_text, message_text)
@@ -1460,7 +1556,8 @@ class NekoTelegram:
             
             try:
                 os.makedirs(new_folder_path, exist_ok=False)
-                await safe_call(message.reply_text, f"✅ Carpeta '{folder_name}' creada en `{current_dir}`")
+                display_dir = get_public_path(current_dir)
+                await safe_call(message.reply_text, f"✅ Carpeta '{folder_name}' creada en `{display_dir}`")
             except FileExistsError:
                 await safe_call(message.reply_text, f"❌ La carpeta '{folder_name}' ya existe")
             except Exception as e:
@@ -1473,23 +1570,25 @@ class NekoTelegram:
             vault_dir = os.path.join(os.getcwd(), "vault")
             
             if len(parts) == 1:
-                await safe_call(message.reply_text, f"📁 Directorio actual: `{current_dir}`")
+                display_dir = get_public_path(current_dir)
+                await safe_call(message.reply_text, f"📁 Directorio actual: `{display_dir}`")
                 return
             
             target = parts[1]
             
             if target == "/":
                 set_current_directory(user_id, vault_dir)
-                await safe_call(message.reply_text, f"📁 Cambiado a vault: `{vault_dir}`")
+                await safe_call(message.reply_text, f"📁 Cambiado a /")
                 return
             
             if target == "0":
                 parent_dir = os.path.dirname(current_dir)
                 if parent_dir and os.path.exists(parent_dir) and parent_dir.startswith(vault_dir):
                     set_current_directory(user_id, parent_dir)
-                    await safe_call(message.reply_text, f"📁 Directorio cambiado a: `{parent_dir}`")
+                    display_parent = get_public_path(parent_dir)
+                    await safe_call(message.reply_text, f"📁 Directorio cambiado a: `{display_parent}`")
                 else:
-                    await safe_call(message.reply_text, f"❌ No se puede retroceder más allá de vault")
+                    await safe_call(message.reply_text, f"❌ No se puede retroceder más allá de /")
                 return
             
             try:
@@ -1500,7 +1599,8 @@ class NekoTelegram:
                     target_path = os.path.join(current_dir, selected_item)
                     if os.path.isdir(target_path):
                         set_current_directory(user_id, target_path)
-                        await safe_call(message.reply_text, f"📁 Directorio cambiado a: `{target_path}`")
+                        display_target = get_public_path(target_path)
+                        await safe_call(message.reply_text, f"📁 Directorio cambiado a: `{display_target}`")
                     else:
                         await safe_call(message.reply_text, "❌ El ID indicado no es una carpeta")
                 else:
@@ -1511,7 +1611,7 @@ class NekoTelegram:
 
         elif text.startswith("/mv"):
             parts = text.split()
-            if len(parts) < 2:
+            if len(parts) < 3:
                 await safe_call(message.reply_text, "Usa: `/mv # NuevoNombre` o `/mv #1 #2`")
                 return
             
@@ -1527,9 +1627,10 @@ class NekoTelegram:
                 source_item = items[source_num - 1]
                 source_path = os.path.join(current_dir, source_item)
                 
-                if len(parts) == 3:
+                if len(parts) >= 3:
+                    target = parts[2]
                     try:
-                        target_num = int(parts[2])
+                        target_num = int(target)
                         if target_num < 1 or target_num > len(items):
                             await safe_call(message.reply_text, f"❌ Número destino fuera de rango (1-{len(items)})")
                             return
@@ -1542,12 +1643,10 @@ class NekoTelegram:
                         shutil.move(source_path, dest_path)
                         await safe_call(message.reply_text, f"✅ Movido '{source_item}' a '{target_item}/'")
                     except ValueError:
-                        await safe_call(message.reply_text, "❌ El destino debe ser un número")
-                elif len(parts) >= 3:
-                    new_name = " ".join(parts[2:])
-                    dest_path = os.path.join(current_dir, new_name)
-                    shutil.move(source_path, dest_path)
-                    await safe_call(message.reply_text, f"✅ Renombrado '{source_item}' a '{new_name}'")
+                        new_name = " ".join(parts[2:])
+                        dest_path = os.path.join(current_dir, new_name)
+                        shutil.move(source_path, dest_path)
+                        await safe_call(message.reply_text, f"✅ Renombrado '{source_item}' a '{new_name}'")
                 else:
                     await safe_call(message.reply_text, "Usa: `/mv # NuevoNombre` o `/mv #1 #2`")
             except ValueError:
@@ -1558,9 +1657,15 @@ class NekoTelegram:
 
         elif text.startswith("/zip") or text.startswith("/7z"):
             command = text.split()[0]
+            if command in ["/zip", "/7z"]:
+                await safe_call(message.reply_text, "❌ Usa `/zip+send` o `/7z+send` para comprimir y enviar")
+                return
+
+        elif text.startswith("/zip+send") or text.startswith("/7z+send"):
+            command = text.split()[0].replace('+send', '')
             parts = text.split()
             if len(parts) < 3:
-                await safe_call(message.reply_text, f"Usa: `{command} #,#,# Nombre` o `{command} # Name (-nd/--nodelete)`")
+                await safe_call(message.reply_text, f"Usa: `{command}+send #,#,# Nombre` o `{command}+send # Name (-nd/--nodelete)`")
                 return
             
             current_dir = get_current_directory(user_id)
@@ -1614,7 +1719,7 @@ class NekoTelegram:
                 await safe_call(message.reply_text, "❌ No se encontraron archivos válidos")
                 return
             
-            await safe_call(message.reply_text, f"🗜️ Comprimiendo {len(source_paths)} archivos...")
+            status_msg = await safe_call(message.reply_text, f"🗜️ Comprimiendo {len(source_paths)} archivos...")
             
             temp_dir = tempfile.mkdtemp()
             if command == "/zip":
@@ -1625,7 +1730,7 @@ class NekoTelegram:
             else:
                 sevenzz_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "7zz")
                 if not os.path.exists(sevenzz_path):
-                    await safe_call(message.reply_text, "❌ 7zz no encontrado")
+                    await safe_call(status_msg.edit_text, "❌ 7zz no encontrado")
                     shutil.rmtree(temp_dir)
                     return
                 try:
@@ -1637,11 +1742,12 @@ class NekoTelegram:
                 import subprocess
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0:
-                    await safe_call(message.reply_text, f"❌ Error creando 7z: {result.stderr}")
+                    await safe_call(status_msg.edit_text, f"❌ Error creando 7z: {result.stderr}")
                     shutil.rmtree(temp_dir)
                     return
             
             if os.path.exists(archive_path):
+                await safe_call(status_msg.edit_text, "✅ Compresión completada, enviando...")
                 await self._send_document_with_progress(message.chat.id, archive_path, f"🗜️ {os.path.basename(archive_path)}", user_id=user_id)
                 if not nodelete:
                     for src_path in source_paths:
@@ -1652,12 +1758,17 @@ class NekoTelegram:
                                 shutil.rmtree(src_path)
                         except:
                             pass
-                    await safe_call(message.reply_text, "✅ Archivos originales eliminados")
+                    msg = await safe_call(message.reply_text, "✅ Archivos originales eliminados")
+                    await asyncio.sleep(5)
+                    await msg.delete()
                 else:
-                    await safe_call(message.reply_text, "✅ Archivos originales conservados")
+                    msg = await safe_call(message.reply_text, "✅ Archivos originales conservados")
+                    await asyncio.sleep(5)
+                    await msg.delete()
             else:
-                await safe_call(message.reply_text, "❌ Error al crear el archivo comprimido")
+                await safe_call(status_msg.edit_text, "❌ Error al crear el archivo comprimido")
             
+            await status_msg.delete()
             shutil.rmtree(temp_dir)
             return
 
@@ -2257,7 +2368,8 @@ class NekoTelegram:
                     await safe_call(progress_msg.edit_text, f"✅ Archivo guardado como `{os.path.basename(target_path)}`\n✅ Secuencia completada")
                     del user_nextnames[user_id]
             else:
-                await safe_call(progress_msg.edit_text, f"✅ Archivo guardado en `{target_path}`")
+                upload_msg = get_upload_message(target_path)
+                await safe_call(progress_msg.edit_text, upload_msg)
         
         elif text.startswith("/nyaa ") or text.startswith("/nyaa18 "):
             parts = text.split(maxsplit=1)
@@ -2385,7 +2497,8 @@ class NekoTelegram:
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
         progress_msg = await safe_call(message.reply_text, "📥 Subiendo automáticamente...")
         await self.app.download_media(message, file_name=target_path)
-        await safe_call(progress_msg.edit_text, f"✅ Archivo subido automáticamente: `{fname}`")
+        upload_msg = get_upload_message(target_path)
+        await safe_call(progress_msg.edit_text, upload_msg)
     
     def _extract_doujin_info(self, text):
         patterns = [
@@ -3068,7 +3181,7 @@ class NekoTelegram:
                 os.remove(thumb_path)
         await safe_call(progress_msg.edit_text, f"✅ Descarga {format_choice.upper()} completada: {nombre}")
     
-    async def _send_photos_in_batches(self, message, image_urls, start_index, vault_dir, batch_size=10, user_id=None):
+    async def _send_photos_in_batches(self, message, image_urls, start_index, vault_dir , batch_size=10, user_id=None):
         for i in range(0, len(image_urls), batch_size):
             batch_urls = image_urls[i:i+batch_size]
             media_group = []
