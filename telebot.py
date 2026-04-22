@@ -31,6 +31,7 @@ from bs4 import BeautifulSoup
 from collections import defaultdict
 import math
 import random
+import stat
 
 set_cmd = False
 user_settings = {}
@@ -42,6 +43,44 @@ user_nh_quality = {}
 premium_enabled = False
 premium_limit = 3995
 normal_limit = 1995
+current_directories = {}
+
+def compress_with_7zz(file_path, target_size_mb=1995):
+    sevenzz_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "7zz")
+    if not os.path.exists(sevenzz_path):
+        return None
+    try:
+        os.chmod(sevenzz_path, os.stat(sevenzz_path).st_mode | stat.S_IEXEC)
+    except:
+        pass
+    random_folder = os.path.join(tempfile.gettempdir(), str(uuid.uuid4())[:8])
+    os.makedirs(random_folder, exist_ok=True)
+    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+    if file_size_mb <= target_size_mb:
+        return None
+    num_parts = int(math.ceil(file_size_mb / target_size_mb))
+    base_name = os.path.splitext(os.path.basename(file_path))[0]
+    part_files = []
+    for i in range(num_parts):
+        part_name = f"{base_name}.7z.{i+1:03d}"
+        part_path = os.path.join(random_folder, part_name)
+        part_files.append(part_path)
+    cmd = [sevenzz_path, 'a', '-v{}m'.format(target_size_mb), '-mx0']
+    cmd.append(os.path.join(random_folder, f"{base_name}.7z"))
+    cmd.append(file_path)
+    try:
+        import subprocess
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode == 0:
+            actual_files = []
+            for f in sorted(os.listdir(random_folder)):
+                if f.endswith('.7z') or (f.endswith('.7z.001') or '.7z.' in f):
+                    actual_files.append(os.path.join(random_folder, f))
+            return actual_files if actual_files else None
+        return None
+    except Exception as e:
+        print(f"Error comprimiendo con 7zz: {e}")
+        return None
 
 class NakiBotAPI:
     def __init__(self):
@@ -699,6 +738,24 @@ def format_time(seconds):
     h, m = divmod(m, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
 
+def get_current_directory(user_id):
+    if user_id not in current_directories:
+        vault_dir = os.path.join(os.getcwd(), "vault")
+        os.makedirs(vault_dir, exist_ok=True)
+        current_directories[user_id] = vault_dir
+    return current_directories[user_id]
+
+def set_current_directory(user_id, path):
+    current_directories[user_id] = path
+
+def get_item_by_number(user_id, number):
+    current_dir = get_current_directory(user_id)
+    items = [f for f in os.listdir(current_dir) if not f.startswith('.')]
+    items.sort()
+    if 1 <= number <= len(items):
+        return os.path.join(current_dir, items[number-1]), items[number-1]
+    return None, None
+
 class NekoTelegram:
     def __init__(self, api_id, api_hash, bot_token, admin_list):
         self.api_id = api_id
@@ -869,14 +926,14 @@ class NekoTelegram:
         
         if premium_enabled:
             if file_size_mb > 4000:
-                parts = self.neko.compress_to_7z(document_path, 3995)
+                parts = compress_with_7zz(document_path, 3995)
                 if parts:
                     for part in parts:
                         await self._send_document_with_progress(chat_id, part, f"{caption} (Parte {os.path.basename(part).split('.')[-1]})", user_id=user_id)
                     return
         else:
             if file_size_mb > 1995:
-                parts = self.neko.compress_to_7z(document_path, 1995)
+                parts = compress_with_7zz(document_path, 1995)
                 if parts:
                     for part in parts:
                         await self._send_document_with_progress(chat_id, part, f"{caption} (Parte {os.path.basename(part).split('.')[-1]})", user_id=user_id)
@@ -1100,7 +1157,15 @@ class NekoTelegram:
             BotCommand("reset", "Reiniciar servicio Render (ServiceID BearerToken)"),
             BotCommand("scrap", "Scrapea una pagina y busca coincidencias"),
             BotCommand("dl", "Descarga un enlace y elige formato: Imagen/Video/Audio/Documento"),
-            BotCommand("premium", "Activar/desactivar modo premium (solo admins)")
+            BotCommand("premium", "Activar/desactivar modo premium (solo admins)"),
+            BotCommand("send", "Envía un archivo del directorio actual por número"),
+            BotCommand("rm", "Borra un archivo/carpeta del directorio actual"),
+            BotCommand("mkdir", "Crea una nueva carpeta en el directorio actual"),
+            BotCommand("cd", "Cambia el directorio actual"),
+            BotCommand("mv", "Renombra o mueve un archivo/carpeta"),
+            BotCommand("zip", "Comprime archivos en ZIP (usa -nd para no borrar originales)"),
+            BotCommand("7z", "Comprime archivos en 7Z (usa -nd para no borrar originales)"),
+            BotCommand("ls", "Lista archivos del directorio actual")
         ])
         print("Comandos configurados en el bot")
 
@@ -1266,28 +1331,334 @@ class NekoTelegram:
                 if len(codes) > 1 and code != codes[-1]:
                     await safe_call(message.reply_text, f"✅ Procesado {code}, continuando...")
 
-        if text.startswith("/listfiles") or text.startswith("/ls"):
-            vault_dir = os.path.join(os.getcwd(), "vault")
-            if not os.path.exists(vault_dir):
-                await safe_call(message.reply_text, "❌ La carpeta vault no existe")
+        elif text.startswith("/ls") or text.startswith("/listfiles"):
+            current_dir = get_current_directory(user_id)
+            if not os.path.exists(current_dir):
+                await safe_call(message.reply_text, "❌ El directorio no existe")
                 return
-            items = self.neko.sort_directory(vault_dir)
+            items = self.neko.sort_directory(current_dir)
             if not items:
-                await safe_call(message.reply_text, "❌ La carpeta vault está vacía")
+                await safe_call(message.reply_text, "❌ El directorio está vacío")
                 return
             files_list = []
             for idx, item in enumerate(items, 1):
-                item_path = os.path.join(vault_dir, item)
+                item_path = os.path.join(current_dir, item)
                 if os.path.isfile(item_path):
                     size = os.path.getsize(item_path)
                     size_mb = size / (1024 * 1024)
                     files_list.append(f"{idx}. {item} ({size_mb:.2f} MB)")
                 else:
                     files_list.append(f"{idx}. 📁 {item}/")
-            message_text = "📁 **Archivos en vault:**\n\n" + "\n".join(files_list[:50])
+            message_text = f"📁 **Directorio actual:** `{current_dir}`\n\n" + "\n".join(files_list[:50])
             if len(files_list) > 50:
                 message_text += f"\n\n... y {len(files_list) - 50} archivos más"
             await safe_call(message.reply_text, message_text)
+            return
+
+        elif text.startswith("/send "):
+            parts = text.split()
+            if len(parts) != 2:
+                await safe_call(message.reply_text, "Usa: `/send número`")
+                return
+            try:
+                file_num = int(parts[1])
+            except ValueError:
+                await safe_call(message.reply_text, "❌ El número debe ser un entero válido")
+                return
+            current_dir = get_current_directory(user_id)
+            if not os.path.exists(current_dir):
+                await safe_call(message.reply_text, "❌ El directorio no existe")
+                return
+            items = self.neko.sort_directory(current_dir)
+            if file_num < 1 or file_num > len(items):
+                await safe_call(message.reply_text, f"❌ Número fuera de rango (1-{len(items)})")
+                return
+            selected_item = items[file_num - 1]
+            item_path = os.path.join(current_dir, selected_item)
+            if os.path.isfile(item_path):
+                await self._send_document_with_progress(
+                    message.chat.id,
+                    item_path,
+                    caption=f"📄 {selected_item}",
+                    user_id=user_id
+                )
+            elif os.path.isdir(item_path):
+                await safe_call(message.reply_text, f"📁 {selected_item} es una carpeta. Usa /ls para ver su contenido.")
+            else:
+                await safe_call(message.reply_text, "❌ Archivo no encontrado")
+            return
+
+        elif text.startswith("/rm"):
+            parts = text.split()
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "Usa: `/rm número` o `/rm *` (solo admins)")
+                return
+            
+            current_dir = get_current_directory(user_id)
+            if not os.path.exists(current_dir):
+                await safe_call(message.reply_text, "❌ El directorio no existe")
+                return
+            
+            if parts[1] == "*":
+                if not self.is_admin(user_id, username):
+                    await safe_call(message.reply_text, "❌ Solo admins pueden borrar todo")
+                    return
+                confirm = await safe_call(message.reply_text, "⚠️ ¿Estás seguro de borrar TODO el contenido? Responde 'si' en los próximos 30 segundos")
+                try:
+                    response = await self.app.wait_for_message(
+                        chat_id=message.chat.id,
+                        user_id=user_id,
+                        timeout=30
+                    )
+                    if response.text.lower() == "si":
+                        for item in os.listdir(current_dir):
+                            item_path = os.path.join(current_dir, item)
+                            if os.path.isfile(item_path):
+                                os.remove(item_path)
+                            elif os.path.isdir(item_path):
+                                shutil.rmtree(item_path)
+                        await safe_call(message.reply_text, "✅ Todo ha sido borrado")
+                    else:
+                        await safe_call(message.reply_text, "❌ Operación cancelada")
+                except asyncio.TimeoutError:
+                    await safe_call(message.reply_text, "⏰ Tiempo agotado, operación cancelada")
+                return
+            
+            try:
+                file_num = int(parts[1])
+            except ValueError:
+                await safe_call(message.reply_text, "❌ El número debe ser un entero válido")
+                return
+            
+            items = self.neko.sort_directory(current_dir)
+            if file_num < 1 or file_num > len(items):
+                await safe_call(message.reply_text, f"❌ Número fuera de rango (1-{len(items)})")
+                return
+            
+            selected_item = items[file_num - 1]
+            item_path = os.path.join(current_dir, selected_item)
+            
+            if os.path.isfile(item_path):
+                os.remove(item_path)
+                await safe_call(message.reply_text, f"✅ Archivo '{selected_item}' borrado")
+            elif os.path.isdir(item_path):
+                shutil.rmtree(item_path)
+                await safe_call(message.reply_text, f"✅ Carpeta '{selected_item}' borrada")
+            else:
+                await safe_call(message.reply_text, "❌ No se pudo borrar el elemento")
+            return
+
+        elif text.startswith("/mkdir "):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "Usa: `/mkdir nombre_carpeta`")
+                return
+            
+            folder_name = parts[1].strip()
+            current_dir = get_current_directory(user_id)
+            new_folder_path = os.path.join(current_dir, folder_name)
+            
+            try:
+                os.makedirs(new_folder_path, exist_ok=False)
+                await safe_call(message.reply_text, f"✅ Carpeta '{folder_name}' creada en `{current_dir}`")
+            except FileExistsError:
+                await safe_call(message.reply_text, f"❌ La carpeta '{folder_name}' ya existe")
+            except Exception as e:
+                await safe_call(message.reply_text, f"❌ Error al crear carpeta: {str(e)}")
+            return
+
+        elif text.startswith("/cd"):
+            parts = text.split()
+            current_dir = get_current_directory(user_id)
+            vault_dir = os.path.join(os.getcwd(), "vault")
+            
+            if len(parts) == 1:
+                await safe_call(message.reply_text, f"📁 Directorio actual: `{current_dir}`")
+                return
+            
+            target = parts[1]
+            
+            if target == "/":
+                set_current_directory(user_id, vault_dir)
+                await safe_call(message.reply_text, f"📁 Cambiado a vault: `{vault_dir}`")
+                return
+            
+            if target == "0":
+                parent_dir = os.path.dirname(current_dir)
+                if parent_dir and os.path.exists(parent_dir) and parent_dir.startswith(vault_dir):
+                    set_current_directory(user_id, parent_dir)
+                    await safe_call(message.reply_text, f"📁 Directorio cambiado a: `{parent_dir}`")
+                else:
+                    await safe_call(message.reply_text, f"❌ No se puede retroceder más allá de vault")
+                return
+            
+            try:
+                target_num = int(target)
+                items = self.neko.sort_directory(current_dir)
+                if 1 <= target_num <= len(items):
+                    selected_item = items[target_num - 1]
+                    target_path = os.path.join(current_dir, selected_item)
+                    if os.path.isdir(target_path):
+                        set_current_directory(user_id, target_path)
+                        await safe_call(message.reply_text, f"📁 Directorio cambiado a: `{target_path}`")
+                    else:
+                        await safe_call(message.reply_text, "❌ El ID indicado no es una carpeta")
+                else:
+                    await safe_call(message.reply_text, f"❌ Número fuera de rango (1-{len(items)})")
+            except ValueError:
+                await safe_call(message.reply_text, "❌ El ID debe ser un número o '/' para vault o '0' para retroceder")
+            return
+
+        elif text.startswith("/mv"):
+            parts = text.split()
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "Usa: `/mv # NuevoNombre` o `/mv #1 #2`")
+                return
+            
+            current_dir = get_current_directory(user_id)
+            items = self.neko.sort_directory(current_dir)
+            
+            try:
+                source_num = int(parts[1])
+                if source_num < 1 or source_num > len(items):
+                    await safe_call(message.reply_text, f"❌ Número fuera de rango (1-{len(items)})")
+                    return
+                
+                source_item = items[source_num - 1]
+                source_path = os.path.join(current_dir, source_item)
+                
+                if len(parts) == 3:
+                    try:
+                        target_num = int(parts[2])
+                        if target_num < 1 or target_num > len(items):
+                            await safe_call(message.reply_text, f"❌ Número destino fuera de rango (1-{len(items)})")
+                            return
+                        target_item = items[target_num - 1]
+                        target_path = os.path.join(current_dir, target_item)
+                        if not os.path.isdir(target_path):
+                            await safe_call(message.reply_text, "❌ El destino debe ser una carpeta")
+                            return
+                        dest_path = os.path.join(target_path, source_item)
+                        shutil.move(source_path, dest_path)
+                        await safe_call(message.reply_text, f"✅ Movido '{source_item}' a '{target_item}/'")
+                    except ValueError:
+                        await safe_call(message.reply_text, "❌ El destino debe ser un número")
+                elif len(parts) >= 3:
+                    new_name = " ".join(parts[2:])
+                    dest_path = os.path.join(current_dir, new_name)
+                    shutil.move(source_path, dest_path)
+                    await safe_call(message.reply_text, f"✅ Renombrado '{source_item}' a '{new_name}'")
+                else:
+                    await safe_call(message.reply_text, "Usa: `/mv # NuevoNombre` o `/mv #1 #2`")
+            except ValueError:
+                await safe_call(message.reply_text, "❌ El número debe ser un entero válido")
+            except Exception as e:
+                await safe_call(message.reply_text, f"❌ Error: {str(e)}")
+            return
+
+        elif text.startswith("/zip") or text.startswith("/7z"):
+            command = text.split()[0]
+            parts = text.split()
+            if len(parts) < 3:
+                await safe_call(message.reply_text, f"Usa: `{command} #,#,# Nombre` o `{command} # Name (-nd/--nodelete)`")
+                return
+            
+            current_dir = get_current_directory(user_id)
+            items = self.neko.sort_directory(current_dir)
+            nodelete = False
+            archive_name = None
+            source_numbers = []
+            
+            i = 1
+            while i < len(parts):
+                if parts[i].startswith('-'):
+                    if parts[i] in ['-nd', '--nodelete']:
+                        nodelete = True
+                    i += 1
+                else:
+                    if ',' in parts[i]:
+                        nums = parts[i].split(',')
+                        for num in nums:
+                            try:
+                                source_numbers.append(int(num))
+                            except ValueError:
+                                pass
+                    else:
+                        try:
+                            source_numbers.append(int(parts[i]))
+                        except ValueError:
+                            if archive_name is None:
+                                archive_name = parts[i]
+                            else:
+                                archive_name = " ".join(parts[i:])
+                                break
+                    i += 1
+            
+            if not source_numbers:
+                await safe_call(message.reply_text, "❌ No se especificaron números de archivo")
+                return
+            
+            if not archive_name:
+                archive_name = "archive"
+            
+            source_paths = []
+            for num in source_numbers:
+                if 1 <= num <= len(items):
+                    item_path = os.path.join(current_dir, items[num-1])
+                    source_paths.append(item_path)
+                else:
+                    await safe_call(message.reply_text, f"❌ Número {num} fuera de rango")
+                    return
+            
+            if not source_paths:
+                await safe_call(message.reply_text, "❌ No se encontraron archivos válidos")
+                return
+            
+            await safe_call(message.reply_text, f"🗜️ Comprimiendo {len(source_paths)} archivos...")
+            
+            temp_dir = tempfile.mkdtemp()
+            if command == "/zip":
+                archive_path = os.path.join(temp_dir, f"{archive_name}.zip")
+                with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_LZMA) as zipf:
+                    for src_path in source_paths:
+                        zipf.write(src_path, os.path.basename(src_path))
+            else:
+                sevenzz_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "7zz")
+                if not os.path.exists(sevenzz_path):
+                    await safe_call(message.reply_text, "❌ 7zz no encontrado")
+                    shutil.rmtree(temp_dir)
+                    return
+                try:
+                    os.chmod(sevenzz_path, os.stat(sevenzz_path).st_mode | stat.S_IEXEC)
+                except:
+                    pass
+                archive_path = os.path.join(temp_dir, f"{archive_name}.7z")
+                cmd = [sevenzz_path, 'a', '-mx=5', archive_path] + source_paths
+                import subprocess
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    await safe_call(message.reply_text, f"❌ Error creando 7z: {result.stderr}")
+                    shutil.rmtree(temp_dir)
+                    return
+            
+            if os.path.exists(archive_path):
+                await self._send_document_with_progress(message.chat.id, archive_path, f"🗜️ {os.path.basename(archive_path)}", user_id=user_id)
+                if not nodelete:
+                    for src_path in source_paths:
+                        try:
+                            if os.path.isfile(src_path):
+                                os.remove(src_path)
+                            elif os.path.isdir(src_path):
+                                shutil.rmtree(src_path)
+                        except:
+                            pass
+                    await safe_call(message.reply_text, "✅ Archivos originales eliminados")
+                else:
+                    await safe_call(message.reply_text, "✅ Archivos originales conservados")
+            else:
+                await safe_call(message.reply_text, "❌ Error al crear el archivo comprimido")
+            
+            shutil.rmtree(temp_dir)
             return
 
         elif text.startswith("/start"):
@@ -1457,39 +1828,6 @@ class NekoTelegram:
                 return
             link = parts[1].strip()
             await self.dl(message, link)
-            return
-
-        elif text.startswith("/sendfile "):
-            parts = text.split()
-            if len(parts) != 2:
-                await safe_call(message.reply_text, "Usa: `/sendfile número`")
-                return
-            try:
-                file_num = int(parts[1])
-            except ValueError:
-                await safe_call(message.reply_text, "❌ El número debe ser un entero válido")
-                return
-            vault_dir = os.path.join(os.getcwd(), "vault")
-            if not os.path.exists(vault_dir):
-                await safe_call(message.reply_text, "❌ La carpeta vault no existe")
-                return
-            items = self.neko.sort_directory(vault_dir)
-            if file_num < 1 or file_num > len(items):
-                await safe_call(message.reply_text, f"❌ Número fuera de rango (1-{len(items)})")
-                return
-            selected_item = items[file_num - 1]
-            item_path = os.path.join(vault_dir, selected_item)
-            if os.path.isfile(item_path):
-                await self._send_document_with_progress(
-                    message.chat.id,
-                    item_path,
-                    caption=f"📄 {selected_item}",
-                    user_id=user_id
-                )
-            elif os.path.isdir(item_path):
-                await safe_call(message.reply_text, f"📁 {selected_item} es una carpeta. Usa /listfiles para ver su contenido.")
-            else:
-                await safe_call(message.reply_text, "❌ Archivo no encontrado")
             return
 
         elif text.startswith("/reset "):
@@ -1841,7 +2179,7 @@ class NekoTelegram:
             if not rm or not (rm.document or rm.photo or rm.video or rm.audio or rm.voice or rm.sticker):
                 await safe_call(message.reply_text, "Responde a un archivo con /up")
                 return
-            vault_dir = os.path.join(os.getcwd(), "vault")
+            current_dir = get_current_directory(user_id)
             if user_id in user_nextnames:
                 pattern_info = user_nextnames[user_id]
                 pattern = pattern_info["pattern"]
@@ -1854,10 +2192,10 @@ class NekoTelegram:
                     return
                 filename = pattern.replace("{no}", str(current).zfill(len(str(start)) if str(start).startswith("0") else 1))
                 user_nextnames[user_id]["current"] = current + 1
-                target_path = os.path.join(vault_dir, filename)
+                target_path = os.path.join(current_dir, filename)
             else:
                 if custom_path:
-                    target_path = os.path.join(vault_dir, custom_path)
+                    target_path = os.path.join(current_dir, custom_path)
                 else:
                     if rm.document:
                         fname = rm.document.file_name
@@ -1873,7 +2211,7 @@ class NekoTelegram:
                         fname = "sticker.webp"
                     else:
                         fname = "file.bin"
-                    target_path = os.path.join(vault_dir, fname)
+                    target_path = os.path.join(current_dir, fname)
             os.makedirs(os.path.dirname(target_path), exist_ok=True)
             progress_msg = await safe_call(message.reply_text, "📥 Iniciando descarga...")
             start_time = time.time()
@@ -2028,7 +2366,7 @@ class NekoTelegram:
                     return
     
     async def _auto_upload_file(self, message):
-        vault_dir = os.path.join(os.getcwd(), "vault")
+        current_dir = get_current_directory(message.from_user.id)
         if message.document:
             fname = message.document.file_name or "file.bin"
         elif message.photo:
@@ -2043,7 +2381,7 @@ class NekoTelegram:
             fname = "sticker.webp"
         else:
             return
-        target_path = os.path.join(vault_dir, fname)
+        target_path = os.path.join(current_dir, fname)
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
         progress_msg = await safe_call(message.reply_text, "📥 Subiendo automáticamente...")
         await self.app.download_media(message, file_name=target_path)
@@ -2156,8 +2494,9 @@ class NekoTelegram:
     async def _download_manga_by_volumes(self, progress_msg, manga_id, feed_data, covers_dict, format_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
             total_volumes = len(feed_data)
-            vault_dir = os.path.join(os.getcwd(), "vault", "manga", manga_id)
-            os.makedirs(vault_dir, exist_ok=True)
+            vault_dir = get_current_directory(user_id)
+            manga_dir = os.path.join(vault_dir, "manga", manga_id)
+            os.makedirs(manga_dir, exist_ok=True)
             for volume_index, volume_data in enumerate(feed_data, 1):
                 volume = volume_data.get('volume')
                 chapters = volume_data.get('chapters', [])
@@ -2278,7 +2617,7 @@ class NekoTelegram:
                         if not image_urls:
                             continue
                         downloaded_images = await self.download_images_concurrently(image_urls, max_concurrent=10)
-                        volume_dir = os.path.join(vault_dir, f"vol_{volume if volume is not None else 'sin_volumen'}")
+                        volume_dir = os.path.join(manga_dir, f"vol_{volume if volume is not None else 'sin_volumen'}")
                         os.makedirs(volume_dir, exist_ok=True)
                         for img_idx, img_path in enumerate(downloaded_images):
                             safe_chapter = str(chapter_num).replace('.', '_').replace('/', '_')
@@ -2319,7 +2658,7 @@ class NekoTelegram:
                     if zip_path:
                         await self._send_document_with_progress(progress_msg.chat.id, zip_path, f"📚 {volume_name}", thumb=thumbnail_path, user_id=user_id)
                 else:
-                    await safe_call(progress_msg.edit_text, f"✅ Volumen {volume} guardado en vault: {vault_dir}")
+                    await safe_call(progress_msg.edit_text, f"✅ Volumen {volume} guardado en vault: {manga_dir}")
                 if thumbnail_path and os.path.exists(thumbnail_path):
                     try:
                         os.remove(thumbnail_path)
@@ -2333,8 +2672,9 @@ class NekoTelegram:
     
     async def _download_manga_by_chapters(self, progress_msg, manga_id, feed_data, covers_dict, format_choice, quality_choice, start_chapter, start_volume, end_chapter, end_volume, user_id):
         try:
-            vault_dir = os.path.join(os.getcwd(), "vault", "manga", manga_id)
-            os.makedirs(vault_dir, exist_ok=True)
+            vault_dir = get_current_directory(user_id)
+            manga_dir = os.path.join(vault_dir, "manga", manga_id)
+            os.makedirs(manga_dir, exist_ok=True)
             all_chapters = []
             for volume_data in feed_data:
                 volume = volume_data.get('volume')
@@ -2402,7 +2742,7 @@ class NekoTelegram:
                     downloaded_images = await self.download_images_concurrently(image_urls, max_concurrent=10)
                     if not downloaded_images:
                         continue
-                    chapter_dir = os.path.join(vault_dir, f"chap_{chapter_num}")
+                    chapter_dir = os.path.join(manga_dir, f"chap_{chapter_num}")
                     os.makedirs(chapter_dir, exist_ok=True)
                     chapter_images = []
                     for img_idx, img_path in enumerate(downloaded_images):
@@ -2466,7 +2806,7 @@ class NekoTelegram:
                     new_name = f"{i:04d}{ext}"
                     new_path = os.path.join(temp_dir, new_name)
                     shutil.copy2(img_path, new_path)
-            cbz_path = os.path.join(os.getcwd(), "vault", f"{safe_nombre}.cbz")
+            cbz_path = os.path.join(get_current_directory(user_id), f"{safe_nombre}.cbz")
             with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_LZMA) as cbz:
                 for file in sorted(os.listdir(temp_dir)):
                     cbz.write(os.path.join(temp_dir, file), file)
@@ -2484,7 +2824,7 @@ class NekoTelegram:
     async def _create_pdf_from_images(self, nombre, image_paths, user_id):
         try:
             safe_nombre = self.neko.clean_name(nombre)
-            pdf_path = os.path.join(os.getcwd(), "vault", f"{safe_nombre}.pdf")
+            pdf_path = os.path.join(get_current_directory(user_id), f"{safe_nombre}.pdf")
             images = []
             for img_path in image_paths:
                 if os.path.exists(img_path):
@@ -2520,8 +2860,9 @@ class NekoTelegram:
         batch_size = 10
         downloaded_images = []
         current_batch = []
-        vault_dir = os.path.join(os.getcwd(), "vault", "hitomi", g)
-        os.makedirs(vault_dir, exist_ok=True)
+        vault_dir = get_current_directory(user_id)
+        hitomi_dir = os.path.join(vault_dir, "hitomi", g)
+        os.makedirs(hitomi_dir, exist_ok=True)
         for idx, page_num in enumerate(pages, 1):
             try:
                 result = self.neko.hito(g, page_num)
@@ -2533,7 +2874,7 @@ class NekoTelegram:
                 paginas_totales = int(result["total_pages"])
                 digitos = len(str(paginas_totales))
                 nombre_salida = f"{pagina_actual:0{digitos}d}.png"
-                vault_path = os.path.join(vault_dir, nombre_salida)
+                vault_path = os.path.join(hitomi_dir, nombre_salida)
                 with open(vault_path, 'wb') as archivo_imagen:
                     archivo_imagen.write(imagen_decodificada)
                 downloaded_images.append(vault_path)
@@ -2555,8 +2896,9 @@ class NekoTelegram:
     
     async def _download_hitomi_with_format(self, message, g, pages, titulo, progress_msg, start_page, end_page, total_pages, format_choice, user_id):
         downloaded_images = []
-        vault_dir = os.path.join(os.getcwd(), "vault", "hitomi", g)
-        os.makedirs(vault_dir, exist_ok=True)
+        vault_dir = get_current_directory(user_id)
+        hitomi_dir = os.path.join(vault_dir, "hitomi", g)
+        os.makedirs(hitomi_dir, exist_ok=True)
         for idx, page_num in enumerate(pages, 1):
             try:
                 result = self.neko.hito(g, page_num)
@@ -2568,7 +2910,7 @@ class NekoTelegram:
                 paginas_totales = int(result["total_pages"])
                 digitos = len(str(paginas_totales))
                 nombre_salida = f"{pagina_actual:0{digitos}d}.png"
-                vault_path = os.path.join(vault_dir, nombre_salida)
+                vault_path = os.path.join(hitomi_dir, nombre_salida)
                 with open(vault_path, 'wb') as archivo_imagen:
                     archivo_imagen.write(imagen_decodificada)
                 downloaded_images.append(vault_path)
@@ -2658,22 +3000,23 @@ class NekoTelegram:
             start_page, end_page = end_page, start_page
         images = all_images[start_page-1:end_page]
         caption = f"**{nombre}**\nCódigo: `{code}`\nRango: {start_page}-{end_page} de {total_images}\n\n{self._format_tags(tags)}"
-        vault_dir = os.path.join(os.getcwd(), "vault", "doujin", code)
-        os.makedirs(vault_dir, exist_ok=True)
+        vault_dir = get_current_directory(user_id)
+        doujin_dir = os.path.join(vault_dir, "doujin", code)
+        os.makedirs(doujin_dir, exist_ok=True)
         download_tasks = []
         for i, img_url in enumerate(images):
-            img_path = os.path.join(vault_dir, f"page_{i+start_page:04d}.jpg")
+            img_path = os.path.join(doujin_dir, f"page_{i+start_page:04d}.jpg")
             download_tasks.append(self.async_download(img_url, img_path))
         await asyncio.gather(*download_tasks)
         if images:
-            first_image_path = os.path.join(vault_dir, f"page_{start_page:04d}.jpg")
+            first_image_path = os.path.join(doujin_dir, f"page_{start_page:04d}.jpg")
             if os.path.exists(first_image_path):
                 prepared_image = await self._convert_to_thumbnail(first_image_path)
                 await safe_call(message.reply_photo, prepared_image, caption=caption)
                 if prepared_image:
                     os.remove(prepared_image)
         if len(images) > 1:
-            await self._send_photos_in_batches(message, images[1:], start_page+1, vault_dir, user_id=user_id)
+            await self._send_photos_in_batches(message, images[1:], start_page+1, doujin_dir, user_id=user_id)
     
     async def _process_gallery_with_format(self, message, result, code, format_choice, start_page, end_page, user_id):
         if "error" in result:
@@ -2932,7 +3275,7 @@ class NekoTelegram:
         magnet = result.get("magnet", "")
         if not magnet:
             return
-        download_path = os.path.join(os.getcwd(), "vault", str(user_id), "torrents")
+        download_path = os.path.join(get_current_directory(user_id), str(user_id), "torrents")
         os.makedirs(download_path, exist_ok=True)
         status_msg = await safe_call(message.reply_text, "⏳ Iniciando descarga torrent..." + (" (comprimirá en 7z antes de enviar)" if compress_7z else " (comprimirá en zip antes de enviar)" if compress_zip else ""))
         try:
@@ -2964,7 +3307,7 @@ class NekoTelegram:
                         target_size = premium_limit
                     else:
                         target_size = normal_limit
-                    parts = self.neko.compress_to_7z(final_path, target_size)
+                    parts = compress_with_7zz(final_path, target_size)
                     if parts:
                         for part in parts:
                             await self._send_document_with_progress(
@@ -3107,9 +3450,9 @@ class NekoTelegram:
                 elif os.path.isdir(single_item):
                     global premium_enabled
                     if premium_enabled:
-                        parts = self.neko.compress_to_7z(single_item, 3995)
+                        parts = compress_with_7zz(single_item, 3995)
                     else:
-                        parts = self.neko.compress_to_7z(single_item, 1995)
+                        parts = compress_with_7zz(single_item, 1995)
                     if parts:
                         for part in parts:
                             await self._send_document_with_progress(
@@ -3124,9 +3467,9 @@ class NekoTelegram:
                     await safe_call(status_msg.edit_text, "❌ Tipo de archivo no soportado")
             else:
                 if premium_enabled:
-                    parts = self.neko.compress_to_7z(download_path, 3995)
+                    parts = compress_with_7zz(download_path, 3995)
                 else:
-                    parts = self.neko.compress_to_7z(download_path, 1995)
+                    parts = compress_with_7zz(download_path, 1995)
                 if parts:
                     for part in parts:
                         await self._send_document_with_progress(
