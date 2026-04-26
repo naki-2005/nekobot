@@ -9,11 +9,16 @@ import threading
 import zipfile
 import stat
 import subprocess
+import uuid
+import random
 import nest_asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pyrogram import Client, filters
 from pyrogram.types import Message, BotCommand
 from pyrogram.errors import FloodWait
+from flask import Flask, send_file, abort, request, Response
+import urllib.parse
+import mimetypes
 
 nest_asyncio.apply()
 
@@ -22,12 +27,111 @@ current_directories = {}
 ftp_base_url = None
 
 def run_flask():
-    from flask import Flask
     app_flask = Flask(__name__)
+    vault_dir = os.path.join(os.getcwd(), "vault")
+    os.makedirs(vault_dir, exist_ok=True)
     
     @app_flask.route('/')
-    def index():
-        return "Funcionando"
+    @app_flask.route('/<path:subpath>')
+    def handle_path(subpath=''):
+        if not subpath:
+            user_id = "web"
+            current_dir = get_current_directory(user_id)
+            items = sort_directory(current_dir)
+            html = '<html><body>'
+            html += '<h1>Vault Explorer</h1>'
+            html += f'<p>Current: {current_dir}</p>'
+            html += '<ul>'
+            if current_dir != vault_dir:
+                parent_dir = os.path.dirname(current_dir)
+                parent_relative = os.path.relpath(parent_dir, vault_dir)
+                if parent_relative == '.':
+                    parent_relative = ''
+                html += f'<li><a href="/">.. (parent)</a></li>'
+                html += f'<li><a href="/{parent_relative}">.. (parent alt)</a></li>'
+            for item in items:
+                item_path = os.path.join(current_dir, item)
+                item_relative = os.path.relpath(item_path, vault_dir)
+                if item_relative == '.':
+                    item_relative = ''
+                if os.path.isdir(item_path):
+                    html += f'<li><a href="/{item_relative}">{item}/</a></li>'
+                else:
+                    size = os.path.getsize(item_path)
+                    size_mb = size / (1024 * 1024)
+                    html += f'<li><a href="/{item_relative}">{item}</a> ({size_mb:.2f} MB)</li>'
+            html += '</ul>'
+            html += '</body></html>'
+            return html
+        
+        normalized_path = urllib.parse.unquote(subpath)
+        full_path = os.path.join(vault_dir, normalized_path)
+        
+        if not os.path.exists(full_path):
+            abort(404)
+        
+        if os.path.isdir(full_path):
+            if "web" not in current_directories:
+                current_directories["web"] = vault_dir
+            current_directories["web"] = full_path
+            items = sort_directory(full_path)
+            html = '<html><body>'
+            html += '<h1>Vault Explorer</h1>'
+            html += f'<p>Current: {full_path}</p>'
+            html += '<ul>'
+            if full_path != vault_dir:
+                parent_dir = os.path.dirname(full_path)
+                parent_relative = os.path.relpath(parent_dir, vault_dir)
+                if parent_relative == '.':
+                    parent_relative = ''
+                html += f'<li><a href="/{parent_relative}">.. (parent)</a></li>'
+            for item in items:
+                item_path = os.path.join(full_path, item)
+                item_relative = os.path.relpath(item_path, vault_dir)
+                if item_relative == '.':
+                    item_relative = ''
+                if os.path.isdir(item_path):
+                    html += f'<li><a href="/{item_relative}">{item}/</a></li>'
+                else:
+                    size = os.path.getsize(item_path)
+                    size_mb = size / (1024 * 1024)
+                    html += f'<li><a href="/{item_relative}">{item}</a> ({size_mb:.2f} MB)</li>'
+            html += '</ul>'
+            html += '</body></html>'
+            return html
+        
+        if os.path.isfile(full_path):
+            range_header = request.headers.get('Range', None)
+            file_size = os.path.getsize(full_path)
+            
+            if range_header:
+                byte_range = range_header.replace('bytes=', '').split('-')
+                start = int(byte_range[0])
+                end = int(byte_range[1]) if byte_range[1] else file_size - 1
+                if start >= file_size:
+                    abort(416)
+                end = min(end, file_size - 1)
+                content_length = end - start + 1
+                
+                def generate_partial():
+                    with open(full_path, 'rb') as f:
+                        f.seek(start)
+                        remaining = content_length
+                        while remaining > 0:
+                            chunk_size = min(8192, remaining)
+                            data = f.read(chunk_size)
+                            if not data:
+                                break
+                            yield data
+                            remaining -= len(data)
+                
+                response = Response(generate_partial(), status=206, mimetype=mimetypes.guess_type(full_path)[0] or 'application/octet-stream')
+                response.headers['Content-Range'] = f'bytes {start}-{end}/{file_size}'
+                response.headers['Content-Length'] = str(content_length)
+                response.headers['Accept-Ranges'] = 'bytes'
+                return response
+            else:
+                return send_file(full_path, as_attachment=True, conditional=True)
     
     app_flask.run(host='0.0.0.0', port=5000)
 
@@ -44,7 +148,7 @@ def sort_directory(directory_path):
     items.sort(key=lambda x: (x[0], x[1]))
     return [item[2] for item in items]
 
-def compress_with_7zz(file_path, output_name=None):
+def compress_with_7zz(file_path, target_size_mb=1995, output_name=None):
     sevenzz_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "7zz")
     if not os.path.exists(sevenzz_path):
         return None
@@ -56,15 +160,27 @@ def compress_with_7zz(file_path, output_name=None):
     if output_name is None:
         output_name = os.path.splitext(os.path.basename(file_path))[0]
     
-    output_dir = os.path.dirname(file_path)
-    output_path = os.path.join(output_dir, f"{output_name}.7z")
+    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+    if file_size_mb <= target_size_mb:
+        return None
     
-    cmd = [sevenzz_path, 'a', '-mx=0', output_path, file_path]
+    random_folder = os.path.join(tempfile.gettempdir(), str(uuid.uuid4())[:8])
+    os.makedirs(random_folder, exist_ok=True)
+    
+    cmd = [sevenzz_path, 'a', f'-v{target_size_mb}m', '-mx0', '-r']
+    archive_base = os.path.join(random_folder, output_name)
+    cmd.append(archive_base)
+    cmd.append(file_path)
     
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode == 0:
-            return output_path
+            part_files = []
+            for f in sorted(os.listdir(random_folder)):
+                full_path = os.path.join(random_folder, f)
+                if os.path.isfile(full_path):
+                    part_files.append(full_path)
+            return part_files if part_files else None
         return None
     except Exception as e:
         print(f"Error comprimiendo con 7zz: {e}")
@@ -125,7 +241,8 @@ class NekoTelegram:
         self.api_hash = api_hash
         self.bot_token = bot_token
         self.admin_list = admin_list
-        self.app = Client("nekobot", api_id=int(api_id), api_hash=api_hash, bot_token=bot_token)
+        random_name = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=10))
+        self.app = Client(random_name, api_id=int(api_id), api_hash=api_hash, bot_token=bot_token)
         self.flask_thread = None
         self.download_pool = ThreadPoolExecutor(max_workers=20)
         
@@ -165,6 +282,8 @@ class NekoTelegram:
         text = message.text.strip()
         user_id = message.from_user.id
         username = message.from_user.username
+        delete_after_send = "-d" in text
+        text = text.replace("-d", "").strip()
 
         if text.startswith("/start"):
             await safe_call(client.send_photo, chat_id=message.chat.id, photo="https://cdn.imgchest.com/files/93cb097b575e.webp", protect_content=True, caption="Nyaa, Hello, I'm Alice. The cute pet of @nakigeplayer")
@@ -220,7 +339,8 @@ class NekoTelegram:
                     message.chat.id,
                     item_path,
                     caption=f"{selected_item}",
-                    user_id=user_id
+                    user_id=user_id,
+                    delete_after=delete_after_send
                 )
             elif os.path.isdir(item_path):
                 await safe_call(message.reply_text, f"{selected_item} es una carpeta. Usa /ls para ver su contenido.")
@@ -399,6 +519,16 @@ class NekoTelegram:
             
             if os.path.exists(archive_path):
                 await safe_call(status_msg.edit_text, f"Archivo comprimido: {archive_name}.zip en {get_public_path(current_dir)}")
+                if delete_after_send:
+                    for src_path in source_paths:
+                        try:
+                            if os.path.isfile(src_path):
+                                os.remove(src_path)
+                            elif os.path.isdir(src_path):
+                                shutil.rmtree(src_path)
+                        except:
+                            pass
+                    await safe_call(message.reply_text, "Archivos originales eliminados")
             else:
                 await safe_call(status_msg.edit_text, "Error al crear el archivo zip")
             
@@ -469,15 +599,42 @@ class NekoTelegram:
             except:
                 pass
             
-            archive_path = os.path.join(current_dir, f"{archive_name}.7z")
-            cmd = [sevenzz_path, 'a', '-mx=5', archive_path] + source_paths
+            random_folder = os.path.join(tempfile.gettempdir(), str(uuid.uuid4())[:8])
+            os.makedirs(random_folder, exist_ok=True)
+            
+            archive_base = os.path.join(random_folder, archive_name)
+            cmd = [sevenzz_path, 'a', '-mx=5', archive_base] + source_paths
             
             result = subprocess.run(cmd, capture_output=True, text=True)
             
-            if result.returncode == 0 and os.path.exists(archive_path):
+            part_files = []
+            for f in sorted(os.listdir(random_folder)):
+                full_path = os.path.join(random_folder, f)
+                if os.path.isfile(full_path):
+                    part_files.append(full_path)
+            
+            if part_files:
+                main_archive = part_files[0]
+                final_path = os.path.join(current_dir, f"{archive_name}.7z")
+                shutil.move(main_archive, final_path)
+                for part in part_files[1:]:
+                    os.remove(part)
+                shutil.rmtree(random_folder, ignore_errors=True)
+                
                 await safe_call(status_msg.edit_text, f"Archivo comprimido: {archive_name}.7z en {get_public_path(current_dir)}")
+                if delete_after_send:
+                    for src_path in source_paths:
+                        try:
+                            if os.path.isfile(src_path):
+                                os.remove(src_path)
+                            elif os.path.isdir(src_path):
+                                shutil.rmtree(src_path)
+                        except:
+                            pass
+                    await safe_call(message.reply_text, "Archivos originales eliminados")
             else:
-                await safe_call(status_msg.edit_text, f"Error al crear el archivo 7z: {result.stderr}")
+                await safe_call(status_msg.edit_text, f"Error al crear el archivo 7z")
+                shutil.rmtree(random_folder, ignore_errors=True)
             
             await asyncio.sleep(3)
             await status_msg.delete()
@@ -543,13 +700,42 @@ class NekoTelegram:
             download_completed = True
             upload_msg = get_upload_message(target_path)
             await safe_call(progress_msg.edit_text, upload_msg)
+            if delete_after_send:
+                try:
+                    os.remove(target_path)
+                    await safe_call(message.reply_text, "Archivo eliminado despues de subir")
+                except:
+                    pass
             return
     
-    async def _send_document_with_progress(self, chat_id, document_path, caption="", thumb=None, reply_to_message_id=None, user_id=None):
+    async def _send_document_with_progress(self, chat_id, document_path, caption="", thumb=None, reply_to_message_id=None, user_id=None, delete_after=False):
         if not os.path.exists(document_path):
             print(f"Archivo no existe: {document_path}")
             await safe_call(self.app.send_message, chat_id, f"Error: Archivo no encontrado: {os.path.basename(document_path)}")
             return
+        
+        file_size_mb = os.path.getsize(document_path) / (1024 * 1024)
+        
+        if file_size_mb > 1995:
+            parts = compress_with_7zz(document_path, 1995)
+            if parts:
+                for part in parts:
+                    await safe_call(
+                        self.app.send_document,
+                        chat_id=chat_id,
+                        document=part,
+                        caption=f"{caption} (parte {os.path.basename(part)})"
+                    )
+                    try:
+                        os.remove(part)
+                    except:
+                        pass
+                if delete_after:
+                    try:
+                        os.remove(document_path)
+                    except:
+                        pass
+                return
         
         progress_msg = await safe_call(self.app.send_message, chat_id, "Preparando envio...")
         start_time = time.time()
@@ -607,10 +793,11 @@ class NekoTelegram:
                 await safe_call(progress_msg.delete)
             except:
                 pass
-            try:
-                os.remove(document_path)
-            except:
-                pass
+            if delete_after:
+                try:
+                    os.remove(document_path)
+                except:
+                    pass
         except Exception as e:
             upload_completed = True
             await upload_task
@@ -627,7 +814,7 @@ class NekoTelegram:
                     caption=caption,
                     thumb=thumb
                 )
-                if os.path.exists(document_path):
+                if delete_after and os.path.exists(document_path):
                     os.remove(document_path)
             except Exception as e2:
                 print(f"Error en reintento: {e2}")
