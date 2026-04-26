@@ -26,29 +26,35 @@ set_cmd = False
 current_directories = {}
 ftp_base_url = None
 
+def get_vault_dir():
+    return os.path.join(os.getcwd(), "vault")
+
+def sanitize_path(path):
+    vault_dir = get_vault_dir()
+    if path.startswith(vault_dir):
+        rel = os.path.relpath(path, vault_dir)
+        return '/' if rel == '.' else '/' + rel.replace('\\', '/')
+    return path
+
 def run_flask():
     app_flask = Flask(__name__)
-    vault_dir = os.path.join(os.getcwd(), "vault")
+    vault_dir = get_vault_dir()
     os.makedirs(vault_dir, exist_ok=True)
     
     @app_flask.route('/')
     @app_flask.route('/<path:subpath>')
     def handle_path(subpath=''):
+        vault_dir = get_vault_dir()
         if not subpath:
             user_id = "web"
             current_dir = get_current_directory(user_id)
             items = sort_directory(current_dir)
             html = '<html><body>'
             html += '<h1>Vault Explorer</h1>'
-            html += f'<p>Current: {current_dir}</p>'
+            html += f'<p>Current: {sanitize_path(current_dir)}</p>'
             html += '<ul>'
             if current_dir != vault_dir:
-                parent_dir = os.path.dirname(current_dir)
-                parent_relative = os.path.relpath(parent_dir, vault_dir)
-                if parent_relative == '.':
-                    parent_relative = ''
-                html += f'<li><a href="/">.. (parent)</a></li>'
-                html += f'<li><a href="/{parent_relative}">.. (parent alt)</a></li>'
+                html += '<li><a href="/">.. (parent)</a></li>'
             for item in items:
                 item_path = os.path.join(current_dir, item)
                 item_relative = os.path.relpath(item_path, vault_dir)
@@ -77,14 +83,10 @@ def run_flask():
             items = sort_directory(full_path)
             html = '<html><body>'
             html += '<h1>Vault Explorer</h1>'
-            html += f'<p>Current: {full_path}</p>'
+            html += f'<p>Current: {sanitize_path(full_path)}</p>'
             html += '<ul>'
             if full_path != vault_dir:
-                parent_dir = os.path.dirname(full_path)
-                parent_relative = os.path.relpath(parent_dir, vault_dir)
-                if parent_relative == '.':
-                    parent_relative = ''
-                html += f'<li><a href="/{parent_relative}">.. (parent)</a></li>'
+                html += '<li><a href="/">.. (parent)</a></li>'
             for item in items:
                 item_path = os.path.join(full_path, item)
                 item_relative = os.path.relpath(item_path, vault_dir)
@@ -188,7 +190,7 @@ def compress_with_7zz(file_path, target_size_mb=1995, output_name=None):
 
 def get_current_directory(user_id):
     if user_id not in current_directories:
-        vault_dir = os.path.join(os.getcwd(), "vault")
+        vault_dir = get_vault_dir()
         os.makedirs(vault_dir, exist_ok=True)
         current_directories[user_id] = vault_dir
     return current_directories[user_id]
@@ -197,13 +199,7 @@ def set_current_directory(user_id, path):
     current_directories[user_id] = path
 
 def get_public_path(absolute_path):
-    vault_dir = os.path.join(os.getcwd(), "vault")
-    if absolute_path.startswith(vault_dir):
-        relative = os.path.relpath(absolute_path, vault_dir)
-        if relative == '.':
-            return '/'
-        return '/' + relative.replace('\\', '/')
-    return absolute_path
+    return sanitize_path(absolute_path)
 
 def get_display_path(absolute_path):
     public_path = get_public_path(absolute_path)
@@ -351,7 +347,7 @@ class NekoTelegram:
         elif text.startswith("/cd"):
             parts = text.split()
             current_dir = get_current_directory(user_id)
-            vault_dir = os.path.join(os.getcwd(), "vault")
+            vault_dir = get_vault_dir()
             
             if len(parts) == 1:
                 display_dir = get_public_path(current_dir)
