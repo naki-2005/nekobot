@@ -59,7 +59,7 @@ def compress_with_7zz(file_path, output_name=None):
     output_dir = os.path.dirname(file_path)
     output_path = os.path.join(output_dir, f"{output_name}.7z")
     
-    cmd = [sevenzz_path, 'a', '-mx=5', output_path, file_path]
+    cmd = [sevenzz_path, 'a', '-mx=0', output_path, file_path]
     
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
