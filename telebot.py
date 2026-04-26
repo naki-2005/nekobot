@@ -9,10 +9,13 @@ import threading
 import zipfile
 import stat
 import subprocess
+import nest_asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pyrogram import Client, filters
 from pyrogram.types import Message, BotCommand
 from pyrogram.errors import FloodWait
+
+nest_asyncio.apply()
 
 set_cmd = False
 current_directories = {}
