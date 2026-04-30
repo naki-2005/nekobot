@@ -796,6 +796,15 @@ class NekoTelegram:
                 await self.lista_cmd()
                 set_cmd = True
             await self._handle_message(client, message)
+        
+        @self.app.on_business_message()
+        async def _handle_business_message(client: Client, message: Message):
+            global set_cmd
+            if not set_cmd:
+                await self.lista_cmd()
+                set_cmd = True
+            await self._handle_business_message(client, message)
+        
         @self.app.on_callback_query()
         async def _handle_callback(client, callback_query):
             await self._handle_callback_query(callback_query)
@@ -807,6 +816,50 @@ class NekoTelegram:
             if username and str(admin) == username:
                 return True
         return False
+    
+    async def _handle_business_message(self, client: Client, message: Message):
+        business_connection = getattr(message, 'business_connection', None)
+        if not business_connection:
+            return
+        
+        user_id = message.from_user.id
+        business_owner_id = business_connection.user.id
+        
+        if user_id == business_owner_id:
+            return
+        
+        if not business_connection.is_enabled:
+            return
+        
+        if not business_connection.rights.can_reply:
+            return
+        
+        if not message.text:
+            return
+        
+        text = message.text.strip()
+        
+        if text.startswith("/start"):
+            await safe_call(message.reply_text, "🌟 Bienvenido al asistente Business.\nPuedo ayudarte con consultas sobre productos, horarios y más.\nEscribe tu pregunta y te responderé lo antes posible.")
+            return
+        
+        if text.startswith("/info"):
+            await safe_call(message.reply_text, "📋 **Información de la empresa**\n\nHorario: Lunes a Viernes 9am-6pm\nEmail: soporte@ejemplo.com\nTeléfono: +123456789")
+            return
+        
+        if text.lower() in ["hola", "buenas", "hey", "ola"]:
+            await safe_call(message.reply_text, "¡Hola! ¿En qué puedo ayudarte hoy?")
+            return
+        
+        if "horario" in text.lower() or "horarios" in text.lower():
+            await safe_call(message.reply_text, "Nuestro horario de atención es de Lunes a Viernes de 9am a 6pm.")
+            return
+        
+        if "precio" in text.lower() or "cuesta" in text.lower():
+            await safe_call(message.reply_text, "Para información de precios, por favor visita nuestra web o escríbenos con el producto específico.")
+            return
+        
+        await safe_call(message.reply_text, "Gracias por tu mensaje. Te responderé a la brevedad. Si es urgente, por favor contáctanos por teléfono.")
     
     async def _handle_callback_query(self, callback_query):
         data = callback_query.data
