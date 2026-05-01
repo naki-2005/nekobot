@@ -25,6 +25,7 @@ nest_asyncio.apply()
 set_cmd = False
 current_directories = {}
 ftp_base_url = None
+premium_users = set()
 
 def get_vault_dir():
     return os.path.join(os.getcwd(), "vault")
@@ -36,7 +37,7 @@ def sanitize_path(path):
         return '/' if rel == '.' else '/' + rel.replace('\\', '/')
     return path
 
-def run_flask():
+def run_flask(port):
     app_flask = Flask(__name__)
     vault_dir = get_vault_dir()
     os.makedirs(vault_dir, exist_ok=True)
@@ -135,7 +136,7 @@ def run_flask():
             else:
                 return send_file(full_path, as_attachment=True, conditional=True)
     
-    app_flask.run(host='0.0.0.0', port=5000)
+    app_flask.run(host='0.0.0.0', port=port)
 
 def sort_directory(directory_path):
     items = []
@@ -232,23 +233,34 @@ async def safe_call(func, *args, **kwargs):
             raise
 
 class NekoTelegram:
-    def __init__(self, api_id, api_hash, bot_token, admin_list):
+    def __init__(self, api_id, api_hash, auth_string, admin_list, is_bot_token=True):
         self.api_id = api_id
         self.api_hash = api_hash
-        self.bot_token = bot_token
+        self.auth_string = auth_string
         self.admin_list = admin_list
+        self.is_bot_token = is_bot_token
         random_name = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=10))
-        self.app = Client(random_name, api_id=int(api_id), api_hash=api_hash, bot_token=bot_token)
+        
+        if is_bot_token:
+            self.app = Client(random_name, api_id=int(api_id), api_hash=api_hash, bot_token=auth_string)
+        else:
+            self.app = Client(random_name, api_id=int(api_id), api_hash=api_hash, session_string=auth_string, in_memory=True)
+        
         self.flask_thread = None
         self.download_pool = ThreadPoolExecutor(max_workers=20)
         
-        @self.app.on_message(filters.private)
-        async def _handle_message(client: Client, message: Message):
-            global set_cmd
-            if not set_cmd:
-                await self.lista_cmd()
-                set_cmd = True
-            await self._handle_message(client, message)
+        if self.is_bot_token:
+            @self.app.on_message(filters.private)
+            async def _handle_message(client: Client, message: Message):
+                global set_cmd
+                if not set_cmd:
+                    await self.lista_cmd()
+                    set_cmd = True
+                await self._handle_message(client, message)
+        else:
+            @self.app.on_message()
+            async def _handle_user_message(client: Client, message: Message):
+                await self._handle_user_message(client, message)
     
     def is_admin(self, user_id, username=None):
         for admin in self.admin_list:
@@ -257,6 +269,9 @@ class NekoTelegram:
             if username and str(admin) == username:
                 return True
         return False
+    
+    def is_premium(self, user_id):
+        return user_id in premium_users
     
     async def lista_cmd(self):
         await self.app.set_bot_commands([
@@ -272,19 +287,441 @@ class NekoTelegram:
         ])
         print("Comandos configurados en el bot")
     
-    async def _handle_message(self, client: Client, message: Message):
+    async def _handle_user_message(self, client: Client, message: Message):
         if not message.text:
             return
         text = message.text.strip()
         user_id = message.from_user.id
         username = message.from_user.username
+        
+        if text == ".enablepremium":
+            if str(user_id) == "@me" or str(user_id) == "me":
+                premium_users.add(user_id)
+                await safe_call(message.reply_text, "✅ Modo premium activado. Puedes enviar archivos de hasta 3999 MB sin comprimir. Archivos mayores a 3999 MB se comprimiran en partes de 3995 MB.")
+            else:
+                await safe_call(message.reply_text, "❌ No tienes permiso para usar este comando.")
+            return
+        
+        elif text == ".disablepremium":
+            if str(user_id) == "@me" or str(user_id) == "me":
+                if user_id in premium_users:
+                    premium_users.remove(user_id)
+                    await safe_call(message.reply_text, "✅ Modo premium desactivado. Limite normal restaurado (1995 MB).")
+                else:
+                    await safe_call(message.reply_text, "⚠️ El modo premium ya estaba desactivado.")
+            else:
+                await safe_call(message.reply_text, "❌ No tienes permiso para usar este comando.")
+            return
+        
+        elif text.startswith("/start") or text.startswith(".start"):
+            await safe_call(client.send_photo, chat_id=message.chat.id, photo="https://cdn.imgchest.com/files/93cb097b575e.webp", protect_content=True, caption="Nyaa, Hello, I'm Alice. The cute pet of @nakigeplayer")
+            return
+        
+        elif text.startswith("/ls") or text.startswith(".ls") or text.startswith("/listfiles") or text.startswith(".listfiles"):
+            current_dir = get_current_directory(user_id)
+            if not os.path.exists(current_dir):
+                await safe_call(message.reply_text, "El directorio no existe")
+                return
+            items = sort_directory(current_dir)
+            if not items:
+                await safe_call(message.reply_text, "El directorio esta vacio")
+                return
+            files_list = []
+            for idx, item in enumerate(items, 1):
+                item_path = os.path.join(current_dir, item)
+                if os.path.isfile(item_path):
+                    size = os.path.getsize(item_path)
+                    size_mb = size / (1024 * 1024)
+                    files_list.append(f"{idx}. {item} ({size_mb:.2f} MB)")
+                else:
+                    files_list.append(f"{idx}. {item}/")
+            display_dir = get_public_path(current_dir)
+            message_text = f"Directorio actual: {display_dir}\n\n" + "\n".join(files_list[:50])
+            if len(files_list) > 50:
+                message_text += f"\n\n... y {len(files_list) - 50} archivos mas"
+            await safe_call(message.reply_text, message_text)
+            return
+        
+        elif text.startswith("/send ") or text.startswith(".send "):
+            parts = text.split()
+            if len(parts) != 2:
+                await safe_call(message.reply_text, "Usa: /send numero")
+                return
+            try:
+                file_num = int(parts[1])
+            except ValueError:
+                await safe_call(message.reply_text, "El numero debe ser un entero valido")
+                return
+            current_dir = get_current_directory(user_id)
+            if not os.path.exists(current_dir):
+                await safe_call(message.reply_text, "El directorio no existe")
+                return
+            items = sort_directory(current_dir)
+            if file_num < 1 or file_num > len(items):
+                await safe_call(message.reply_text, f"Numero fuera de rango (1-{len(items)})")
+                return
+            selected_item = items[file_num - 1]
+            item_path = os.path.join(current_dir, selected_item)
+            if os.path.isfile(item_path):
+                await self._send_document_with_progress(
+                    message.chat.id,
+                    item_path,
+                    caption=f"{selected_item}",
+                    user_id=user_id,
+                    delete_after=False
+                )
+            elif os.path.isdir(item_path):
+                await safe_call(message.reply_text, f"{selected_item} es una carpeta. Usa /ls para ver su contenido.")
+            else:
+                await safe_call(message.reply_text, "Archivo no encontrado")
+            return
+        
+        elif text.startswith("/cd") or text.startswith(".cd"):
+            parts = text.split()
+            current_dir = get_current_directory(user_id)
+            vault_dir = get_vault_dir()
+            
+            if len(parts) == 1:
+                display_dir = get_public_path(current_dir)
+                await safe_call(message.reply_text, f"Directorio actual: {display_dir}")
+                return
+            
+            target = parts[1]
+            
+            if target == "/":
+                set_current_directory(user_id, vault_dir)
+                await safe_call(message.reply_text, "Cambiado a /")
+                return
+            
+            if target == "0":
+                parent_dir = os.path.dirname(current_dir)
+                if parent_dir and os.path.exists(parent_dir) and parent_dir.startswith(vault_dir):
+                    set_current_directory(user_id, parent_dir)
+                    display_parent = get_public_path(parent_dir)
+                    await safe_call(message.reply_text, f"Directorio cambiado a: {display_parent}")
+                else:
+                    await safe_call(message.reply_text, "No se puede retroceder mas alla de /")
+                return
+            
+            try:
+                target_num = int(target)
+                items = sort_directory(current_dir)
+                if 1 <= target_num <= len(items):
+                    selected_item = items[target_num - 1]
+                    target_path = os.path.join(current_dir, selected_item)
+                    if os.path.isdir(target_path):
+                        set_current_directory(user_id, target_path)
+                        display_target = get_public_path(target_path)
+                        await safe_call(message.reply_text, f"Directorio cambiado a: {display_target}")
+                    else:
+                        await safe_call(message.reply_text, "El ID indicado no es una carpeta")
+                else:
+                    await safe_call(message.reply_text, f"Numero fuera de rango (1-{len(items)})")
+            except ValueError:
+                await safe_call(message.reply_text, "El ID debe ser un numero o / para vault o 0 para retroceder")
+            return
+        
+        elif text.startswith("/mkdir ") or text.startswith(".mkdir "):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await safe_call(message.reply_text, "Usa: /mkdir nombre_carpeta")
+                return
+            
+            folder_name = parts[1].strip()
+            current_dir = get_current_directory(user_id)
+            new_folder_path = os.path.join(current_dir, folder_name)
+            
+            try:
+                os.makedirs(new_folder_path, exist_ok=False)
+                display_dir = get_public_path(current_dir)
+                await safe_call(message.reply_text, f"Carpeta '{folder_name}' creada en {display_dir}")
+            except FileExistsError:
+                await safe_call(message.reply_text, f"La carpeta '{folder_name}' ya existe")
+            except Exception as e:
+                await safe_call(message.reply_text, f"Error al crear carpeta: {str(e)}")
+            return
+        
+        elif text.startswith("/mv") or text.startswith(".mv"):
+            parts = text.split()
+            if len(parts) < 3:
+                await safe_call(message.reply_text, "Usa: /mv # NuevoNombre o /mv #1 #2")
+                return
+            
+            current_dir = get_current_directory(user_id)
+            items = sort_directory(current_dir)
+            
+            try:
+                source_num = int(parts[1])
+                if source_num < 1 or source_num > len(items):
+                    await safe_call(message.reply_text, f"Numero fuera de rango (1-{len(items)})")
+                    return
+                
+                source_item = items[source_num - 1]
+                source_path = os.path.join(current_dir, source_item)
+                
+                if len(parts) >= 3:
+                    target = parts[2]
+                    try:
+                        target_num = int(target)
+                        if target_num < 1 or target_num > len(items):
+                            await safe_call(message.reply_text, f"Numero destino fuera de rango (1-{len(items)})")
+                            return
+                        target_item = items[target_num - 1]
+                        target_path = os.path.join(current_dir, target_item)
+                        if not os.path.isdir(target_path):
+                            await safe_call(message.reply_text, "El destino debe ser una carpeta")
+                            return
+                        dest_path = os.path.join(target_path, source_item)
+                        shutil.move(source_path, dest_path)
+                        await safe_call(message.reply_text, f"Movido '{source_item}' a '{target_item}/'")
+                    except ValueError:
+                        new_name = " ".join(parts[2:])
+                        dest_path = os.path.join(current_dir, new_name)
+                        shutil.move(source_path, dest_path)
+                        await safe_call(message.reply_text, f"Renombrado '{source_item}' a '{new_name}'")
+                else:
+                    await safe_call(message.reply_text, "Usa: /mv # NuevoNombre o /mv #1 #2")
+            except ValueError:
+                await safe_call(message.reply_text, "El numero debe ser un entero valido")
+            except Exception as e:
+                await safe_call(message.reply_text, f"Error: {str(e)}")
+            return
+        
+        elif text.startswith("/zip ") or text.startswith(".zip "):
+            parts = text.split()
+            if len(parts) < 3:
+                await safe_call(message.reply_text, "Usa: /zip # Nombre o /zip #,# Nombre")
+                return
+            
+            current_dir = get_current_directory(user_id)
+            items = sort_directory(current_dir)
+            source_numbers = []
+            archive_name = None
+            
+            i = 1
+            while i < len(parts):
+                if ',' in parts[i]:
+                    nums = parts[i].split(',')
+                    for num in nums:
+                        try:
+                            source_numbers.append(int(num))
+                        except ValueError:
+                            pass
+                else:
+                    try:
+                        source_numbers.append(int(parts[i]))
+                    except ValueError:
+                        if archive_name is None:
+                            archive_name = parts[i]
+                        else:
+                            archive_name = " ".join(parts[i:])
+                            break
+                i += 1
+            
+            if not source_numbers:
+                await safe_call(message.reply_text, "No se especificaron numeros de archivo")
+                return
+            
+            if not archive_name:
+                archive_name = "archive"
+            
+            source_paths = []
+            for num in source_numbers:
+                if 1 <= num <= len(items):
+                    item_path = os.path.join(current_dir, items[num-1])
+                    source_paths.append(item_path)
+                else:
+                    await safe_call(message.reply_text, f"Numero {num} fuera de rango")
+                    return
+            
+            if not source_paths:
+                await safe_call(message.reply_text, "No se encontraron archivos validos")
+                return
+            
+            status_msg = await safe_call(message.reply_text, f"Comprimiendo {len(source_paths)} archivos en zip...")
+            
+            archive_path = os.path.join(current_dir, f"{archive_name}.zip")
+            with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_LZMA) as zipf:
+                for src_path in source_paths:
+                    zipf.write(src_path, os.path.basename(src_path))
+            
+            if os.path.exists(archive_path):
+                await safe_call(status_msg.edit_text, f"Archivo comprimido: {archive_name}.zip en {get_public_path(current_dir)}")
+            else:
+                await safe_call(status_msg.edit_text, "Error al crear el archivo zip")
+            
+            await asyncio.sleep(3)
+            await status_msg.delete()
+            return
+        
+        elif text.startswith("/7z ") or text.startswith(".7z "):
+            parts = text.split()
+            if len(parts) < 3:
+                await safe_call(message.reply_text, "Usa: /7z # Nombre o /7z #,# Nombre")
+                return
+            
+            current_dir = get_current_directory(user_id)
+            items = sort_directory(current_dir)
+            source_numbers = []
+            archive_name = None
+            
+            i = 1
+            while i < len(parts):
+                if ',' in parts[i]:
+                    nums = parts[i].split(',')
+                    for num in nums:
+                        try:
+                            source_numbers.append(int(num))
+                        except ValueError:
+                            pass
+                else:
+                    try:
+                        source_numbers.append(int(parts[i]))
+                    except ValueError:
+                        if archive_name is None:
+                            archive_name = parts[i]
+                        else:
+                            archive_name = " ".join(parts[i:])
+                            break
+                i += 1
+            
+            if not source_numbers:
+                await safe_call(message.reply_text, "No se especificaron numeros de archivo")
+                return
+            
+            if not archive_name:
+                archive_name = "archive"
+            
+            source_paths = []
+            for num in source_numbers:
+                if 1 <= num <= len(items):
+                    item_path = os.path.join(current_dir, items[num-1])
+                    source_paths.append(item_path)
+                else:
+                    await safe_call(message.reply_text, f"Numero {num} fuera de rango")
+                    return
+            
+            if not source_paths:
+                await safe_call(message.reply_text, "No se encontraron archivos validos")
+                return
+            
+            status_msg = await safe_call(message.reply_text, f"Comprimiendo {len(source_paths)} archivos en 7z...")
+            
+            sevenzz_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "7zz")
+            if not os.path.exists(sevenzz_path):
+                await safe_call(status_msg.edit_text, "7zz no encontrado")
+                return
+            
+            try:
+                os.chmod(sevenzz_path, os.stat(sevenzz_path).st_mode | stat.S_IEXEC)
+            except:
+                pass
+            
+            random_folder = os.path.join(tempfile.gettempdir(), str(uuid.uuid4())[:8])
+            os.makedirs(random_folder, exist_ok=True)
+            
+            archive_base = os.path.join(random_folder, archive_name)
+            cmd = [sevenzz_path, 'a', '-mx=5', archive_base] + source_paths
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            part_files = []
+            for f in sorted(os.listdir(random_folder)):
+                full_path = os.path.join(random_folder, f)
+                if os.path.isfile(full_path):
+                    part_files.append(full_path)
+            
+            if part_files:
+                main_archive = part_files[0]
+                final_path = os.path.join(current_dir, f"{archive_name}.7z")
+                shutil.move(main_archive, final_path)
+                for part in part_files[1:]:
+                    os.remove(part)
+                shutil.rmtree(random_folder, ignore_errors=True)
+                
+                await safe_call(status_msg.edit_text, f"Archivo comprimido: {archive_name}.7z en {get_public_path(current_dir)}")
+            else:
+                await safe_call(status_msg.edit_text, f"Error al crear el archivo 7z")
+                shutil.rmtree(random_folder, ignore_errors=True)
+            
+            await asyncio.sleep(3)
+            await status_msg.delete()
+            return
+        
+        elif text.startswith("/up") or text.startswith(".up"):
+            rm = message.reply_to_message
+            if not rm or not (rm.document or rm.photo or rm.video or rm.audio or rm.voice or rm.sticker):
+                await safe_call(message.reply_text, "Responde a un archivo con /up")
+                return
+            current_dir = get_current_directory(user_id)
+            if rm.document:
+                fname = rm.document.file_name
+            elif rm.photo:
+                fname = "photo.jpg"
+            elif rm.video:
+                fname = rm.video.file_name or "video.mp4"
+            elif rm.audio:
+                fname = rm.audio.file_name or "audio.mp3"
+            elif rm.voice:
+                fname = "voice.ogg"
+            elif rm.sticker:
+                fname = "sticker.webp"
+            else:
+                fname = "file.bin"
+            target_path = os.path.join(current_dir, fname)
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            progress_msg = await safe_call(message.reply_text, "Iniciando descarga...")
+            start_time = time.time()
+            download_completed = False
+            current_bytes = 0
+            total_bytes = rm.document.file_size if rm.document else 0
+            async def update_download_progress():
+                nonlocal current_bytes, total_bytes, download_completed, start_time, progress_msg, target_path
+                last_update = time.time()
+                while not download_completed:
+                    if total_bytes > 0:
+                        elapsed = int(time.time() - start_time)
+                        formatted_time = format_time(elapsed)
+                        progress_ratio = current_bytes / total_bytes if total_bytes else 0
+                        bar_length = 20
+                        filled_length = int(bar_length * progress_ratio)
+                        bar = "#" * filled_length + "-" * (bar_length - filled_length)
+                        current_mb = current_bytes / (1024 * 1024)
+                        total_mb = total_bytes / (1024 * 1024)
+                        if time.time() - last_update >= 10:
+                            await safe_call(
+                                progress_msg.edit_text,
+                                f"Descargando archivo...\n"
+                                f"Tiempo: {formatted_time}\n"
+                                f"Progreso: {current_mb:.2f} MB / {total_mb:.2f} MB\n"
+                                f"[{bar}] {progress_ratio*100:.1f}%\n"
+                                f"Velocidad: {(current_bytes/elapsed)/(1024*1024) if elapsed>0 else 0:.1f} MB/s\n"
+                                f"Archivo: {os.path.basename(target_path)}"
+                            )
+                            last_update = time.time()
+                    await asyncio.sleep(0.5)
+            async def progress_callback(current, total):
+                nonlocal current_bytes
+                current_bytes = current
+            asyncio.create_task(update_download_progress())
+            await self.app.download_media(rm, file_name=target_path, progress=progress_callback)
+            download_completed = True
+            upload_msg = get_upload_message(target_path)
+            await safe_call(progress_msg.edit_text, upload_msg)
+            return
+    
+    async def _handle_message(self, client: Client, message: Message):
+        if not message.text:
+            return
+        text = message.text.strip()
+        user_id = message.from_user.id
         delete_after_send = "-d" in text
         text = text.replace("-d", "").strip()
-
+        
         if text.startswith("/start"):
             await safe_call(client.send_photo, chat_id=message.chat.id, photo="https://cdn.imgchest.com/files/93cb097b575e.webp", protect_content=True, caption="Nyaa, Hello, I'm Alice. The cute pet of @nakigeplayer")
             return
-
+        
         elif text.startswith("/ls") or text.startswith("/listfiles"):
             current_dir = get_current_directory(user_id)
             if not os.path.exists(current_dir):
@@ -309,7 +746,7 @@ class NekoTelegram:
                 message_text += f"\n\n... y {len(files_list) - 50} archivos mas"
             await safe_call(message.reply_text, message_text)
             return
-
+        
         elif text.startswith("/send "):
             parts = text.split()
             if len(parts) != 2:
@@ -343,7 +780,7 @@ class NekoTelegram:
             else:
                 await safe_call(message.reply_text, "Archivo no encontrado")
             return
-
+        
         elif text.startswith("/cd"):
             parts = text.split()
             current_dir = get_current_directory(user_id)
@@ -388,7 +825,7 @@ class NekoTelegram:
             except ValueError:
                 await safe_call(message.reply_text, "El ID debe ser un numero o / para vault o 0 para retroceder")
             return
-
+        
         elif text.startswith("/mkdir "):
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
@@ -408,7 +845,7 @@ class NekoTelegram:
             except Exception as e:
                 await safe_call(message.reply_text, f"Error al crear carpeta: {str(e)}")
             return
-
+        
         elif text.startswith("/mv"):
             parts = text.split()
             if len(parts) < 3:
@@ -454,7 +891,7 @@ class NekoTelegram:
             except Exception as e:
                 await safe_call(message.reply_text, f"Error: {str(e)}")
             return
-
+        
         elif text.startswith("/zip "):
             parts = text.split()
             if len(parts) < 3:
@@ -531,7 +968,7 @@ class NekoTelegram:
             await asyncio.sleep(3)
             await status_msg.delete()
             return
-
+        
         elif text.startswith("/7z "):
             parts = text.split()
             if len(parts) < 3:
@@ -635,7 +1072,7 @@ class NekoTelegram:
             await asyncio.sleep(3)
             await status_msg.delete()
             return
-
+        
         elif text.startswith("/up"):
             rm = message.reply_to_message
             if not rm or not (rm.document or rm.photo or rm.video or rm.audio or rm.voice or rm.sticker):
@@ -712,8 +1149,30 @@ class NekoTelegram:
         
         file_size_mb = os.path.getsize(document_path) / (1024 * 1024)
         
-        if file_size_mb > 1995:
+        is_premium_user = self.is_premium(user_id) if user_id else False
+        
+        if not is_premium_user and file_size_mb > 1995:
             parts = compress_with_7zz(document_path, 1995)
+            if parts:
+                for part in parts:
+                    await safe_call(
+                        self.app.send_document,
+                        chat_id=chat_id,
+                        document=part,
+                        caption=f"{caption} (parte {os.path.basename(part)})"
+                    )
+                    try:
+                        os.remove(part)
+                    except:
+                        pass
+                if delete_after:
+                    try:
+                        os.remove(document_path)
+                    except:
+                        pass
+                return
+        elif is_premium_user and file_size_mb > 3999:
+            parts = compress_with_7zz(document_path, 3995)
             if parts:
                 for part in parts:
                     await safe_call(
@@ -816,16 +1275,16 @@ class NekoTelegram:
                 print(f"Error en reintento: {e2}")
                 raise
     
-    def start_flask(self):
+    def start_flask(self, port):
         if self.flask_thread and self.flask_thread.is_alive():
             print("Flask ya esta corriendo")
             return
-        self.flask_thread = threading.Thread(target=run_flask, daemon=True)
+        self.flask_thread = threading.Thread(target=run_flask, args=(port,), daemon=True)
         self.flask_thread.start()
-        print("Servidor Flask iniciado en puerto 5000.")
+        print(f"Servidor Flask iniciado en puerto {port}.")
     
     def run(self):
-        print("Iniciando bot de Telegram...")
+        print("Iniciando cliente de Telegram...")
         self.app.run()
 
 def main():
@@ -833,24 +1292,38 @@ def main():
     parser.add_argument("-A", "--api", help="API ID de Telegram")
     parser.add_argument("-H", "--hash", help="API Hash de Telegram")
     parser.add_argument("-T", "--token", help="Token del Bot")
-    parser.add_argument("-F", "--flask", action="store_true", help="Incluir servidor Flask junto con el bot")
+    parser.add_argument("-SS", "--session", help="Session String para usuario")
+    parser.add_argument("-F", "--flask", nargs='?', const=5000, type=int, help="Puerto para Flask (ej: -F 5005)")
     parser.add_argument("-admin", "--admin", action="append", help="Administradores (ID o username)")
     args = parser.parse_args()
     
     api_id = args.api or os.environ.get("API_ID")
     api_hash = args.hash or os.environ.get("API_HASH")
     bot_token = args.token or os.environ.get("BOT_TOKEN")
+    session_string = args.session or os.environ.get("SESSION_STRING")
     admin_list = args.admin if args.admin else []
     
-    if not all([api_id, api_hash, bot_token]):
-        print("Error: Faltan credenciales. Usa -A -H -T o variables de entorno.")
+    if not all([api_id, api_hash]):
+        print("Error: Faltan API_ID y API_HASH. Usa -A -H o variables de entorno.")
         sys.exit(1)
     
-    bot = NekoTelegram(api_id, api_hash, bot_token, admin_list)
-    if args.flask:
-        bot.start_flask()
+    if not (bot_token or session_string):
+        print("Error: Debes especificar -T (token) o -SS (session string)")
+        sys.exit(1)
     
-    print("Iniciando bot de Telegram...")
+    if bot_token and session_string:
+        print("Error: No puedes usar -T y -SS al mismo tiempo")
+        sys.exit(1)
+    
+    is_bot = bool(bot_token)
+    auth_string = bot_token if is_bot else session_string
+    
+    bot = NekoTelegram(api_id, api_hash, auth_string, admin_list, is_bot_token=is_bot)
+    
+    if args.flask is not None:
+        bot.start_flask(args.flask)
+    
+    print("Iniciando cliente de Telegram...")
     bot.run()
 
 if __name__ == "__main__":
