@@ -17,7 +17,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, send_file, render_template_string, jsonify
 from pyrogram import Client, filters
-from pyrogram.types import Message, BotCommand
+from pyrogram.types import Message, BotCommand, InputMediaPhoto
 from pyrogram.errors import FloodWait
 from bs4 import BeautifulSoup
 from collections import defaultdict
@@ -42,11 +42,6 @@ async def safe_call(func, *args, **kwargs):
         except Exception as e:
             print(f"❌ Error inesperado en {func.__name__}: {type(e).__name__}: {e}")
             raise
-
-def format_time(seconds):
-    m, s = divmod(seconds, 60)
-    h, m = divmod(m, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
 
 def clean_name(name):
     name = re.sub(r'[<>:"/\\|?*]', '_', name)
@@ -380,7 +375,18 @@ class NekoTelegram:
         ])
         print("Comandos configurados en el bot")
 
-    async def _create_cbz_from_images(self, nombre, image_paths):
+    async def _create_thumbnail(self, image_path, size=(320, 320)):
+        try:
+            img = Image.open(image_path)
+            img.thumbnail(size)
+            thumb_path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+            img.save(thumb_path, "JPEG")
+            return thumb_path
+        except Exception as e:
+            print(f"Error creando thumbnail: {e}")
+            return None
+
+    async def _create_cbz_from_images(self, nombre, image_paths, thumb_path=None):
         try:
             safe_nombre = clean_name(nombre)
             temp_dir = tempfile.mkdtemp()
@@ -408,7 +414,7 @@ class NekoTelegram:
             print(f"Error creando CBZ: {e}")
             return None
 
-    async def _create_pdf_from_images(self, nombre, image_paths):
+    async def _create_pdf_from_images(self, nombre, image_paths, thumb_path=None):
         try:
             safe_nombre = clean_name(nombre)
             pdf_path = os.path.join(BASE_DIR, f"{safe_nombre}.pdf")
@@ -437,7 +443,7 @@ class NekoTelegram:
             print(f"Error creando PDF: {e}")
             return None
 
-    async def _send_photos_in_batches(self, message, image_paths, user_id):
+    async def _send_photos_in_batches(self, message, image_paths):
         batch_size = 19
         for i in range(0, len(image_paths), batch_size):
             batch = image_paths[i:i+batch_size]
@@ -454,6 +460,15 @@ class NekoTelegram:
                 except Exception as e:
                     print(f"Error enviando grupo: {e}")
                 await asyncio.sleep(0.5)
+
+    async def _download_and_send_cover(self, message, cover_url, caption):
+        if cover_url:
+            cover_path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+            if await self.async_download(cover_url, cover_path):
+                await safe_call(message.reply_photo, cover_path, caption=caption)
+                os.remove(cover_path)
+                return cover_path
+        return None
 
     async def _handle_message(self, client: Client, message: Message):
         if not message.text:
@@ -503,6 +518,7 @@ class NekoTelegram:
             nombre = result.get("title", "Sin titulo")
             all_images = result.get("image_links", [])
             tags = result.get("tags", {})
+            cover_image = result.get("cover_image", all_images[0] if all_images else "")
             
             if not all_images:
                 await safe_call(message.reply_text, "No hay imagenes")
@@ -519,7 +535,7 @@ class NekoTelegram:
                         tag_lines.append(f"**{category.upper()}:** {', '.join(items)}")
                 caption += "\n\n" + "\n".join(tag_lines)
             
-            await safe_call(message.reply_text, caption)
+            cover_path = await self._download_and_send_cover(message, cover_image, caption)
             
             if format_choice == "raw":
                 temp_files = []
@@ -529,7 +545,7 @@ class NekoTelegram:
                         temp_files.append(temp_path)
                     
                     if len(temp_files) >= 19:
-                        await self._send_photos_in_batches(message, temp_files, user_id)
+                        await self._send_photos_in_batches(message, temp_files)
                         for f in temp_files:
                             try:
                                 os.remove(f)
@@ -540,7 +556,7 @@ class NekoTelegram:
                     await asyncio.sleep(0.2)
                 
                 if temp_files:
-                    await self._send_photos_in_batches(message, temp_files, user_id)
+                    await self._send_photos_in_batches(message, temp_files)
                     for f in temp_files:
                         try:
                             os.remove(f)
@@ -551,17 +567,30 @@ class NekoTelegram:
             
             elif format_choice == "cbz":
                 downloaded_images = await self.download_images_concurrently(all_images, max_concurrent=10)
-                cbz_path = await self._create_cbz_from_images(f"{nombre} - {code}", downloaded_images)
+                thumb_for_file = cover_path if cover_path and os.path.exists(cover_path) else None
+                if thumb_for_file:
+                    thumb_for_file = await self._create_thumbnail(thumb_for_file)
+                cbz_path = await self._create_cbz_from_images(f"{nombre} - {code}", downloaded_images, thumb_for_file)
                 if cbz_path:
-                    await self._send_document_with_progress(message.chat.id, cbz_path, f"📚 {nombre} - {code}")
+                    await self._send_document_with_progress(message.chat.id, cbz_path, f"📚 {nombre} - {code}", thumb=thumb_for_file)
                     await safe_call(message.reply_text, f"✅ CBZ creado y enviado")
+                if thumb_for_file and os.path.exists(thumb_for_file):
+                    os.remove(thumb_for_file)
             
             elif format_choice == "pdf":
                 downloaded_images = await self.download_images_concurrently(all_images, max_concurrent=10)
-                pdf_path = await self._create_pdf_from_images(f"{nombre} - {code}", downloaded_images)
+                thumb_for_file = cover_path if cover_path and os.path.exists(cover_path) else None
+                if thumb_for_file:
+                    thumb_for_file = await self._create_thumbnail(thumb_for_file)
+                pdf_path = await self._create_pdf_from_images(f"{nombre} - {code}", downloaded_images, thumb_for_file)
                 if pdf_path:
-                    await self._send_document_with_progress(message.chat.id, pdf_path, f"📚 {nombre} - {code}")
+                    await self._send_document_with_progress(message.chat.id, pdf_path, f"📚 {nombre} - {code}", thumb=thumb_for_file)
                     await safe_call(message.reply_text, f"✅ PDF creado y enviado")
+                if thumb_for_file and os.path.exists(thumb_for_file):
+                    os.remove(thumb_for_file)
+            
+            if cover_path and os.path.exists(cover_path):
+                os.remove(cover_path)
 
         elif text.startswith("/snh ") or text.startswith("/s3h "):
             parts = text.split(maxsplit=1)
@@ -625,17 +654,26 @@ class NekoTelegram:
                 
                 await asyncio.sleep(0.2)
     
-    async def _send_document_with_progress(self, chat_id, document_path, caption=""):
+    async def _send_document_with_progress(self, chat_id, document_path, caption="", thumb=None):
         if not os.path.exists(document_path):
             await safe_call(self.app.send_message, chat_id, f"❌ Error: Archivo no encontrado")
             return
         
-        await safe_call(
-            self.app.send_document,
-            chat_id=chat_id,
-            document=document_path,
-            caption=caption
-        )
+        if thumb and os.path.exists(thumb):
+            await safe_call(
+                self.app.send_document,
+                chat_id=chat_id,
+                document=document_path,
+                caption=caption,
+                thumb=thumb
+            )
+        else:
+            await safe_call(
+                self.app.send_document,
+                chat_id=chat_id,
+                document=document_path,
+                caption=caption
+            )
         
         try:
             os.remove(document_path)
