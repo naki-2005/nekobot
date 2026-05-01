@@ -1,23 +1,36 @@
 import os
-import asyncio
 import sys
 import argparse
+import asyncio
+import threading
 import tempfile
 import time
 import aiohttp
 import aiofiles
 import re
 import requests
+import json
+import math
+import shutil
+import zipfile
+import uuid
 from concurrent.futures import ThreadPoolExecutor
+from flask import Flask, request, send_file, render_template_string, jsonify
 from pyrogram import Client, filters
 from pyrogram.types import Message, BotCommand
 from pyrogram.errors import FloodWait
-import json
-import math
 from bs4 import BeautifulSoup
 from collections import defaultdict
+from PIL import Image
+import io
+import base64
 
 set_cmd = False
+user_settings = {}
+
+flask_app = Flask(__name__)
+BASE_DIR = os.path.join(os.getcwd(), "vault")
+os.makedirs(BASE_DIR, exist_ok=True)
 
 async def safe_call(func, *args, **kwargs):
     while True:
@@ -30,17 +43,27 @@ async def safe_call(func, *args, **kwargs):
             print(f"❌ Error inesperado en {func.__name__}: {type(e).__name__}: {e}")
             raise
 
+def format_time(seconds):
+    m, s = divmod(seconds, 60)
+    h, m = divmod(m, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+def clean_name(name):
+    name = re.sub(r'[<>:"/\\|?*]', '_', name)
+    name = name.replace('\n', ' ').replace('\r', ' ')
+    name = ' '.join(name.split())
+    if len(name) > 200:
+        name = name[:197] + '...'
+    return name
+
 class NakiBotAPI:
     def __init__(self):
         self.session = requests.Session()
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate',
         }
         self.tag_cache = {}
-        self.tag_cache_lock = threading.Lock()
         self.last_request_time = 0
         self.min_request_interval = 4.0
     
@@ -51,76 +74,10 @@ class NakiBotAPI:
             time.sleep(self.min_request_interval - elapsed)
         self.last_request_time = time.time()
     
-    def _fetch_tags_by_ids(self, tag_ids):
-        if not tag_ids:
-            return {}
-        
-        with self.tag_cache_lock:
-            cached_tags = {tid: self.tag_cache[tid] for tid in tag_ids if tid in self.tag_cache}
-            missing_ids = [tid for tid in tag_ids if tid not in self.tag_cache]
-        
-        if not missing_ids:
-            return cached_tags
-        
-        all_tag_data = {}
-        all_tag_data.update(cached_tags)
-        
-        for i in range(0, len(missing_ids), 100):
-            batch = missing_ids[i:i+100]
-            ids_param = ','.join(str(tid) for tid in batch)
-            api_url = f"https://nhentai.net/api/v2/tags/ids?ids={ids_param}"
-            
-            self._rate_limit()
-            
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    response = self.session.get(api_url, timeout=30)
-                    if response.status_code == 200:
-                        data = response.json()
-                        with self.tag_cache_lock:
-                            for tag in data:
-                                tag_id = tag.get('id')
-                                if tag_id:
-                                    self.tag_cache[tag_id] = tag
-                                    all_tag_data[tag_id] = tag
-                        break
-                    else:
-                        if attempt < max_retries - 1:
-                            time.sleep(2)
-                            continue
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        time.sleep(2)
-                        continue
-        
-        return all_tag_data
-    
-    def _format_tags_for_display(self, tag_data):
-        if not tag_data:
-            return ""
-        
-        tags_by_type = defaultdict(list)
-        for tag_id, tag_info in tag_data.items():
-            tag_type = tag_info.get('type', 'unknown')
-            tag_name = tag_info.get('name', '')
-            if tag_name:
-                tags_by_type[tag_type].append(tag_name)
-        
-        tag_lines = []
-        for tag_type, tag_names in tags_by_type.items():
-            if tag_names:
-                tag_names_str = ', '.join(tag_names)
-                tag_lines.append(f"**{tag_type}:** {tag_names_str}")
-        
-        return "\n".join(tag_lines)
-    
     def snh(self, search_term, page=1):
         api_url = f"https://nhentai.net/api/v2/search?query={search_term}&page={page}"
         
         max_retries = 3
-        retry_delay = 2
-        
         for attempt in range(max_retries):
             try:
                 self._rate_limit()
@@ -128,60 +85,34 @@ class NakiBotAPI:
                 
                 if response.status_code != 200:
                     if attempt < max_retries - 1:
-                        time.sleep(retry_delay)
+                        time.sleep(2)
                         continue
                     return {"error": f"API error: {response.status_code}"}
                 
                 data = response.json()
                 
                 results_data = []
-                all_tag_ids = set()
-                
                 for item in data.get('result', []):
-                    tag_ids = item.get('tag_ids', [])
-                    for tid in tag_ids:
-                        all_tag_ids.add(tid)
-                    
                     thumbnail_url = f"https://t2.nhentai.net/{item['thumbnail']}" if item.get('thumbnail') else ''
-                    
                     results_data.append({
                         'nombre': item.get('english_title', ''),
                         'miniatura': thumbnail_url,
                         'codigo': str(item.get('id', '')),
-                        'num_pages': item.get('num_pages', 0),
-                        'tag_ids': tag_ids
+                        'num_pages': item.get('num_pages', 0)
                     })
                 
-                tag_data = self._fetch_tags_by_ids(list(all_tag_ids))
-                
-                for result in results_data:
-                    tag_ids = result.pop('tag_ids', [])
-                    result['tags'] = self._format_tags_for_display({tid: tag_data[tid] for tid in tag_ids if tid in tag_data})
-                
-                total = data.get('total', 0)
-                num_pages = data.get('num_pages', 0)
-                per_page = data.get('per_page', 25)
-                
                 return {
-                    'total_resultados': total,
-                    'total_paginas': num_pages,
+                    'total_resultados': data.get('total', 0),
+                    'total_paginas': data.get('num_pages', 0),
                     'pagina_actual': page,
                     'termino_busqueda': search_term,
-                    'resultados': results_data,
-                    'resultados_por_pagina': per_page
+                    'resultados': results_data
                 }
                 
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay * (attempt + 1))
-                    continue
-                return {"error": "Timeout o error de conexión después de múltiples intentos"}
-            except json.JSONDecodeError:
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-                return {"error": "Error decodificando la respuesta JSON"}
             except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
                 return {"error": f"Error: {str(e)}"}
         
         return {"error": "Falló después de múltiples intentos"}
@@ -248,19 +179,18 @@ class NakiBotAPI:
                 'error': str(e)
             }
             
-    def vnh(self, code, quality="hd"):
-        max_retries = 3
-        retry_delay = 2
+    def vnh(self, code):
+        api_url = f"https://nhentai.net/api/v2/galleries/{code}"
         
+        max_retries = 3
         for attempt in range(max_retries):
             try:
-                api_url = f"https://nhentai.net/api/v2/galleries/{code}"
                 self._rate_limit()
                 response = self.session.get(api_url, timeout=30)
                 
                 if response.status_code != 200:
                     if attempt < max_retries - 1:
-                        time.sleep(retry_delay)
+                        time.sleep(2)
                         continue
                     return {
                         'title': '',
@@ -299,29 +229,11 @@ class NakiBotAPI:
                     for page in data['pages']:
                         page_path = page.get('path', '')
                         if page_path:
-                            if quality == "thumb":
-                                page_path = page_path.replace('.', 't.')
-                                image_link = f"https://t2.nhentai.net/{page_path}"
-                            else:
-                                image_link = f"https://i2.nhentai.net/{page_path}"
+                            image_link = f"https://i2.nhentai.net/{page_path}"
                             image_links.append(image_link)
                     
                     if image_links:
                         cover_image = image_links[0]
-                else:
-                    media_id = data.get('media_id', '')
-                    num_pages = data.get('num_pages', 0)
-                    
-                    if media_id and num_pages > 0:
-                        for page_num in range(1, num_pages + 1):
-                            if quality == "thumb":
-                                image_link = f"https://t2.nhentai.net/galleries/{media_id}/{page_num}t.jpg"
-                            else:
-                                image_link = f"https://i2.nhentai.net/galleries/{media_id}/{page_num}.jpg"
-                            image_links.append(image_link)
-                        
-                        if image_links:
-                            cover_image = image_links[0]
                 
                 return {
                     'title': title,
@@ -332,32 +244,9 @@ class NakiBotAPI:
                     'success': True
                 }
                 
-            except requests.exceptions.RequestException as e:
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay * (attempt + 1))
-                    continue
-                return {
-                    'title': '',
-                    'code': int(code) if str(code).isdigit() else 0,
-                    'cover_image': '',
-                    'tags': {},
-                    'image_links': [],
-                    'success': False,
-                    'error': str(e)[:100]
-                }
-            except json.JSONDecodeError as e:
-                return {
-                    'title': '',
-                    'code': int(code) if str(code).isdigit() else 0,
-                    'cover_image': '',
-                    'tags': {},
-                    'image_links': [],
-                    'success': False,
-                    'error': f"JSON decode error: {str(e)}"
-                }
             except Exception as e:
                 if attempt < max_retries - 1:
-                    time.sleep(retry_delay * (attempt + 1))
+                    time.sleep(2)
                     continue
                 return {
                     'title': '',
@@ -442,6 +331,7 @@ class NekoTelegram:
         self.naki_api = NakiBotAPI()
         self.app = Client("nekobot", api_id=int(api_id), api_hash=api_hash, bot_token=bot_token)
         self.download_pool = ThreadPoolExecutor(max_workers=20)
+        self.flask_thread = None
         
         @self.app.on_message(filters.private)
         async def _handle_message(client: Client, message: Message):
@@ -463,23 +353,133 @@ class NekoTelegram:
             print(f"Error descargando {url}: {e}")
         return False
     
+    async def download_images_concurrently(self, image_urls, max_concurrent=10):
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def download_one(url):
+            async with semaphore:
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                temp_path = temp_file.name
+                temp_file.close()
+                if await self.async_download(url, temp_path):
+                    return temp_path
+                return None
+        
+        tasks = [download_one(url) for url in image_urls]
+        results = await asyncio.gather(*tasks)
+        return [r for r in results if r]
+    
     async def lista_cmd(self):
         await self.app.set_bot_commands([
+            BotCommand("start", "Iniciar bot"),
             BotCommand("nh", "Descarga un doujin de nhentai"),
             BotCommand("3h", "Descarga un doujin de 3hentai"),
             BotCommand("snh", "Busca doujins por filtros en nhentai"),
             BotCommand("s3h", "Busca doujins por filtros en 3hentai"),
+            BotCommand("setfile", "Configurar formato de salida (cbz/pdf/raw)"),
         ])
         print("Comandos configurados en el bot")
+
+    async def _create_cbz_from_images(self, nombre, image_paths):
+        try:
+            safe_nombre = clean_name(nombre)
+            temp_dir = tempfile.mkdtemp()
+            for i, img_path in enumerate(image_paths):
+                if os.path.exists(img_path):
+                    ext = os.path.splitext(img_path)[1]
+                    new_name = f"{i:04d}{ext}"
+                    new_path = os.path.join(temp_dir, new_name)
+                    shutil.copy2(img_path, new_path)
+            
+            cbz_path = os.path.join(BASE_DIR, f"{safe_nombre}.cbz")
+            with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_DEFLATED) as cbz:
+                for file in sorted(os.listdir(temp_dir)):
+                    cbz.write(os.path.join(temp_dir, file), file)
+            
+            shutil.rmtree(temp_dir)
+            for img_path in image_paths:
+                try:
+                    os.remove(img_path)
+                except:
+                    pass
+            
+            return cbz_path
+        except Exception as e:
+            print(f"Error creando CBZ: {e}")
+            return None
+
+    async def _create_pdf_from_images(self, nombre, image_paths):
+        try:
+            safe_nombre = clean_name(nombre)
+            pdf_path = os.path.join(BASE_DIR, f"{safe_nombre}.pdf")
+            
+            images = []
+            for img_path in image_paths:
+                if os.path.exists(img_path):
+                    try:
+                        img = Image.open(img_path)
+                        img = img.convert("RGB")
+                        images.append(img)
+                    except Exception as e:
+                        print(f"Error procesando imagen {img_path}: {e}")
+                        continue
+            
+            if images:
+                images[0].save(pdf_path, "PDF", save_all=True, append_images=images[1:])
+                for img_path in image_paths:
+                    try:
+                        os.remove(img_path)
+                    except:
+                        pass
+                return pdf_path
+            return None
+        except Exception as e:
+            print(f"Error creando PDF: {e}")
+            return None
+
+    async def _send_photos_in_batches(self, message, image_paths, user_id):
+        batch_size = 19
+        for i in range(0, len(image_paths), batch_size):
+            batch = image_paths[i:i+batch_size]
+            media_group = []
+            for img_path in batch:
+                try:
+                    media_group.append(InputMediaPhoto(img_path))
+                except Exception as e:
+                    print(f"Error añadiendo foto: {e}")
+            
+            if media_group:
+                try:
+                    await self.app.send_media_group(chat_id=message.chat.id, media=media_group)
+                except Exception as e:
+                    print(f"Error enviando grupo: {e}")
+                await asyncio.sleep(0.5)
 
     async def _handle_message(self, client: Client, message: Message):
         if not message.text:
             return
         
         text = message.text.strip()
+        user_id = message.from_user.id
 
         if text.startswith("/start"):
             await safe_call(client.send_photo, chat_id=message.chat.id, photo="https://cdn.imgchest.com/files/93cb097b575e.webp", protect_content=True, caption="Nyaa, Hello, I'm Alice. The cute pet of @nakigeplayer")
+            return
+
+        elif text.startswith("/setfile "):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                current = user_settings.get(user_id, "cbz")
+                await safe_call(message.reply_text, f"Formato actual: **{current.upper()}**\nUsa: `/setfile cbz` o `/setfile pdf` o `/setfile raw`")
+                return
+            
+            format_option = parts[1].lower()
+            if format_option not in ["cbz", "pdf", "raw"]:
+                await safe_call(message.reply_text, "❌ Formato inválido. Usa: cbz, pdf o raw")
+                return
+            
+            user_settings[user_id] = format_option
+            await safe_call(message.reply_text, f"✅ Formato configurado a: **{format_option.upper()}**")
             return
 
         elif text.startswith("/nh ") or text.startswith("/3h "):
@@ -508,17 +508,60 @@ class NekoTelegram:
                 await safe_call(message.reply_text, "No hay imagenes")
                 return
             
-            caption = f"**{nombre}**\nCódigo: `{code}`\nTotal: {len(all_images)} páginas\n\n{self._format_tags(tags)}"
+            format_choice = user_settings.get(user_id, "cbz")
+            
+            caption = f"**{nombre}**\nCódigo: `{code}`\nTotal: {len(all_images)} páginas\nFormato: {format_choice.upper()}"
+            
+            if tags:
+                tag_lines = []
+                for category, items in tags.items():
+                    if items:
+                        tag_lines.append(f"**{category.upper()}:** {', '.join(items)}")
+                caption += "\n\n" + "\n".join(tag_lines)
             
             await safe_call(message.reply_text, caption)
             
-            for i, img_url in enumerate(all_images, 1):
-                temp_path = await self._prepare_image_for_telegram(img_url)
-                if temp_path:
-                    await safe_call(message.reply_photo, temp_path, caption=f"Página {i}/{len(all_images)}")
-                    os.remove(temp_path)
+            if format_choice == "raw":
+                temp_files = []
+                for i, img_url in enumerate(all_images, 1):
+                    temp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+                    if await self.async_download(img_url, temp_path):
+                        temp_files.append(temp_path)
+                    
+                    if len(temp_files) >= 19:
+                        await self._send_photos_in_batches(message, temp_files, user_id)
+                        for f in temp_files:
+                            try:
+                                os.remove(f)
+                            except:
+                                pass
+                        temp_files = []
+                    
+                    await asyncio.sleep(0.2)
                 
-                await asyncio.sleep(0.2)
+                if temp_files:
+                    await self._send_photos_in_batches(message, temp_files, user_id)
+                    for f in temp_files:
+                        try:
+                            os.remove(f)
+                        except:
+                            pass
+                
+                await safe_call(message.reply_text, f"✅ Descarga RAW completada: {nombre}")
+            
+            elif format_choice == "cbz":
+                downloaded_images = await self.download_images_concurrently(all_images, max_concurrent=10)
+                cbz_path = await self._create_cbz_from_images(f"{nombre} - {code}", downloaded_images)
+                if cbz_path:
+                    await self._send_document_with_progress(message.chat.id, cbz_path, f"📚 {nombre} - {code}")
+                    await safe_call(message.reply_text, f"✅ CBZ creado y enviado")
+            
+            elif format_choice == "pdf":
+                downloaded_images = await self.download_images_concurrently(all_images, max_concurrent=10)
+                pdf_path = await self._create_pdf_from_images(f"{nombre} - {code}", downloaded_images)
+                if pdf_path:
+                    await self._send_document_with_progress(message.chat.id, pdf_path, f"📚 {nombre} - {code}")
+                    await safe_call(message.reply_text, f"✅ PDF creado y enviado")
 
         elif text.startswith("/snh ") or text.startswith("/s3h "):
             parts = text.split(maxsplit=1)
@@ -547,40 +590,32 @@ class NekoTelegram:
                 await safe_call(message.reply_text, f"Error: `{result['error']}`")
                 return
             
-            total_resultados = result.get("total_resultados", 0)
-            total_paginas = result.get("total_paginas", 0)
-            pagina_actual = result.get("pagina_actual", 1)
-            termino = result.get("termino_busqueda", "")
             resultados = result.get("resultados", [])
-            
-            info_text = f"🔍 **Búsqueda:** {termino}\n"
-            info_text += f"📊 **Resultados:** {total_resultados}\n"
-            info_text += f"📄 **Página:** {pagina_actual}/{total_paginas}\n\n"
-            
-            await safe_call(message.reply_text, info_text)
             
             if not resultados:
                 await safe_call(message.reply_text, "No se encontraron resultados")
                 return
             
-            for item in resultados:
+            info_text = f"🔍 **{result.get('termino_busqueda', search)}**\n"
+            info_text += f"📊 Resultados: {result.get('total_resultados', 0)}\n"
+            info_text += f"📄 Página: {result.get('pagina_actual', page)}/{result.get('total_paginas', 1)}\n\n"
+            
+            await safe_call(message.reply_text, info_text)
+            
+            for item in resultados[:50]:
                 code = item.get("codigo", "")
                 nombre = item.get("nombre", "Sin titulo")
                 miniatura = item.get("miniatura", "")
                 num_pages = item.get("num_pages", 0)
-                tags = item.get("tags", "")
                 
                 if miniatura.startswith("//"):
                     miniatura = f"https:{miniatura}"
                 
-                caption = f"**{nombre}**\n📖 Código: `{code}`\n📄 Páginas: {num_pages}"
-                if tags:
-                    caption += f"\n\n🏷️ **Tags:**\n{tags}"
-                caption += f"\n\n📥 Usa `/nh {code}` para descargar"
+                caption = f"**{nombre}**\n📖 Código: `{code}`\n📄 Páginas: {num_pages}\n\n📥 Usa `/nh {code}` para descargar"
                 
                 if miniatura:
-                    temp_path = await self._prepare_image_for_telegram(miniatura)
-                    if temp_path:
+                    temp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+                    if await self.async_download(miniatura, temp_path):
                         await safe_call(message.reply_photo, temp_path, caption=caption)
                         os.remove(temp_path)
                     else:
@@ -590,23 +625,33 @@ class NekoTelegram:
                 
                 await asyncio.sleep(0.2)
     
-    async def _prepare_image_for_telegram(self, url):
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-        temp_path = temp_file.name
-        temp_file.close()
-        if await self.async_download(url, temp_path):
-            return temp_path
-        return None
+    async def _send_document_with_progress(self, chat_id, document_path, caption=""):
+        if not os.path.exists(document_path):
+            await safe_call(self.app.send_message, chat_id, f"❌ Error: Archivo no encontrado")
+            return
+        
+        await safe_call(
+            self.app.send_document,
+            chat_id=chat_id,
+            document=document_path,
+            caption=caption
+        )
+        
+        try:
+            os.remove(document_path)
+        except:
+            pass
     
-    def _format_tags(self, tags):
-        if not tags:
-            return ""
-        tag_lines = []
-        for category, items in tags.items():
-            if items:
-                items_str = ", ".join(items)
-                tag_lines.append(f"**{category.upper()}:** {items_str}")
-        return "\n".join(tag_lines)
+    def start_flask(self):
+        if self.flask_thread and self.flask_thread.is_alive():
+            return
+        
+        def run_flask():
+            flask_app.run(host="0.0.0.0", port=5001, debug=False, use_reloader=False)
+        
+        self.flask_thread = threading.Thread(target=run_flask, daemon=True)
+        self.flask_thread.start()
+        print("[INFO] Servidor Flask iniciado en puerto 5001")
     
     def run(self):
         print("[INFO] Iniciando bot de Telegram...")
@@ -617,6 +662,7 @@ def main():
     parser.add_argument("-A", "--api", help="API ID de Telegram")
     parser.add_argument("-H", "--hash", help="API Hash de Telegram")
     parser.add_argument("-T", "--token", help="Token del Bot")
+    parser.add_argument("-F", "--flask", action="store_true", help="Incluir servidor Flask junto con el bot")
     args = parser.parse_args()
 
     api_id = args.api or os.environ.get("API_ID")
@@ -628,6 +674,10 @@ def main():
         sys.exit(1)
     
     bot = NekoTelegram(api_id, api_hash, bot_token)
+    
+    if args.flask:
+        bot.start_flask()
+    
     bot.run()
 
 if __name__ == "__main__":
