@@ -120,7 +120,7 @@ class MangaDex:
         
         return json.dumps(all_covers, ensure_ascii=False)
     
-    def feed(self, manga_id):
+    def feed(self, manga_id, language='en'):
         if not manga_id:
             return json.dumps({'error': 'Se requiere el parámetro manga'}, ensure_ascii=False)
         
@@ -131,7 +131,7 @@ class MangaDex:
         
         while True:
             params = {
-                'translatedLanguage[]': 'en',
+                'translatedLanguage[]': language,
                 'limit': limit,
                 'offset': offset
             }
